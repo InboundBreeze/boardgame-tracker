@@ -60,13 +60,60 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-const fetchBGG = async (url) => {
+// Smart fetcher that mimics a browser and uses fallbacks if GitHub's IPs are blocked
+const fetchBGG = async (targetUrl) => {
   // Add a delay to respect BGG rate limits
   await new Promise(r => setTimeout(r, 2000));
-  const res = await fetch(url);
-  if (res.status === 202) throw new Error("202 Accepted: BGG is still building the data. Try again later.");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.text();
+
+  const endpoints = [
+    { name: "Direct", url: targetUrl },
+    { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}` },
+    { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}` }
+  ];
+
+  const debugLogs = [];
+  let finalResponse = null;
+
+  for (const endpoint of endpoints) {
+    console.log(`  -> Attempting via ${endpoint.name}...`);
+    try {
+      const res = await fetch(endpoint.url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/xml, text/xml, */*'
+        }
+      });
+
+      if (res.status === 202) {
+         throw new Error("202 Accepted: BGG is preparing the data. Please re-run the GitHub Action in 1 minute.");
+      }
+
+      if (res.status === 429) {
+         debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
+         continue;
+      }
+
+      const text = await res.text();
+
+      // Ensure we actually got XML back and not a Cloudflare "Verify you are human" HTML page
+      if (res.ok && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
+        console.log(`  -> Success via ${endpoint.name}!`);
+        finalResponse = text;
+        break;
+      } else {
+         debugLogs.push(`${endpoint.name} (Blocked/HTML/Empty)`);
+      }
+    } catch (err) {
+      if (err.message.includes("202 Accepted")) throw err; // Bubble this specific error up to exit early
+      debugLogs.push(`${endpoint.name} (${err.message})`);
+    }
+  }
+
+  if (!finalResponse) {
+    throw new Error(`All fetching endpoints failed. Cloudflare is aggressively blocking. Logs: ${debugLogs.join(" | ")}`);
+  }
+
+  return finalResponse;
 };
 
 const runSync = async () => {
