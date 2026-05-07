@@ -1,0 +1,29 @@
+name: Daily BGG Sync
+
+on:
+  schedule:
+    # Runs at 08:00 UTC (roughly 3:00 AM / 4:00 AM EST depending on Daylight Savings) every day
+    - cron: '0 8 * * *'
+  workflow_dispatch: # Allows you to click a button in GitHub to run it manually!
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: |
+          npm install firebase xmldom
+
+      - name: Run Sync Script
+        env:
+          FIREBASE_CONFIG: ${{ secrets.FIREBASE_CONFIG }}
+          BGG_USERNAME: "Inboundbreeze"
+        run: node scripts/bgg-sync.js
