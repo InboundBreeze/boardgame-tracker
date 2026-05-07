@@ -11,8 +11,19 @@ if (!configStr) {
   process.exit(1);
 }
 
-// 2. Bulletproof Parsing: Extract the object even if they pasted the whole 'const' block
+// 2. Ultra-Robust Parsing
 configStr = configStr.trim();
+
+// Strip out variable declarations if "const firebaseConfig =" was accidentally copied
+configStr = configStr.replace(/^(const|let|var)\s+\w+\s*=\s*/, '');
+// Strip trailing semicolons
+configStr = configStr.replace(/;$/, '');
+
+// If the inner contents were copied without the curly braces, wrap it for them
+if (!configStr.startsWith('{')) {
+    configStr = '{ \n' + configStr + '\n }';
+}
+
 const match = configStr.match(/\{[\s\S]*\}/);
 if (match) {
     configStr = match[0];
@@ -23,13 +34,23 @@ try {
   // Try strict JSON first
   firebaseConfig = JSON.parse(configStr);
 } catch (e) {
-  // Fallback: Relaxed parser that handles missing quotes around keys (standard JS object)
+  // Fallback: Relaxed parser (handles missing quotes, single quotes, missing braces)
   try {
-    firebaseConfig = new Function("return " + configStr)();
+    // The parentheses force JS to properly evaluate the string as an object
+    firebaseConfig = new Function("return (" + configStr + ");")();
   } catch (err) {
-    console.error("FATAL ERROR: Could not parse FIREBASE_CONFIG. Please ensure it is a valid object.");
+    console.error("FATAL ERROR: Could not parse FIREBASE_CONFIG.");
+    console.error("Parser Error:", err.message);
+    // Print a safe snippet of the string so you can see what went wrong without leaking the whole key
+    console.error("Snippet of what the script received:", configStr.substring(0, 45) + "...");
     process.exit(1);
   }
+}
+
+// Final safety check
+if (!firebaseConfig || typeof firebaseConfig !== 'object' || !firebaseConfig.apiKey) {
+    console.error("FATAL ERROR: Config parsed, but 'apiKey' is missing. Please verify your secret.");
+    process.exit(1);
 }
 
 const username = process.env.BGG_USERNAME || 'Inboundbreeze';
