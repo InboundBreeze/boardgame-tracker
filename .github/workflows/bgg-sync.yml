@@ -26,4 +26,4 @@ jobs:
         env:
           FIREBASE_CONFIG: ${{ secrets.FIREBASE_CONFIG }}
           BGG_USERNAME: "Inboundbreeze"
-        run: node scripts/bgg-sync.js
+        run: node scripts/bgg-sync.mjs
