@@ -81,16 +81,24 @@ export default function App() {
       let finalStatus = null;
       let isRateLimited = false;
 
-      const endpoints = [
+      const endpoints = [];
+      // Prevent relative URL fetching in sandboxed blob environments to avoid "Failed to parse URL" crashes
+      const isSandboxEnvironment = window.location.protocol.includes('blob') || window.location.origin === 'null';
+      
+      if (!isSandboxEnvironment) {
         // 1. Vite Local Proxy (Solves local dev CORS automatically)
-        { name: "Vite Proxy", url: `/bgg-proxy/xmlapi2/${apiType === 'plays' ? 'plays' : 'collection'}?username=${encodeURIComponent(username)}${apiType === 'collection' ? '&stats=1' : ''}` },
+        endpoints.push({ name: "Vite Proxy", url: `/bgg-proxy/xmlapi2/${apiType === 'plays' ? 'plays' : 'collection'}?username=${encodeURIComponent(username)}${apiType === 'collection' ? '&stats=1' : ''}`, isJson: false });
         // 2. Vercel Serverless Function (For Production)
-        { name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}` },
-        // 3. Fallback Public Proxies
-        { name: "AllOrigins", url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}` },
-        { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}` },
-        { name: "Direct", url: targetUrl }
-      ];
+        endpoints.push({ name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`, isJson: false });
+      }
+
+      // 3. Fallback Public Proxies
+      endpoints.push(
+        { name: "CorsProxy.io", url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, isJson: false },
+        { name: "AllOrigins (JSON)", url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, isJson: true },
+        { name: "AllOrigins (Raw)", url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, isJson: false },
+        { name: "Direct", url: targetUrl, isJson: false }
+      );
 
       for (const endpoint of endpoints) {
         console.log(`[BGG Sync] Attempting endpoint: ${endpoint.name}`);
@@ -105,17 +113,33 @@ export default function App() {
             continue;
           }
 
-          const text = await res.text();
+          let text = "";
+          let status = res.status;
+
+          // Process JSON proxies vs Raw proxies
+          if (endpoint.isJson) {
+            const data = await res.json();
+            text = data.contents || "";
+            status = data.status?.http_code || res.status;
+            if (status === 429) {
+              isRateLimited = true;
+              debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
+              console.warn(`[BGG Sync] ${endpoint.name} hit BGG Rate Limit (429) within JSON.`);
+              continue;
+            }
+          } else {
+            text = await res.text();
+          }
           
           // Validate it's actually XML and not an HTML error page or SPA fallback
-          if (res.ok && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
+          if ((res.ok || (endpoint.isJson && text)) && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
             console.log(`[BGG Sync] ${endpoint.name} SUCCESS! Fetched ${text.length} characters of XML.`);
             finalResponse = text;
-            finalStatus = res.status;
+            finalStatus = status;
             break; // Success! Stop checking endpoints.
           } else {
              const snippet = text ? text.substring(0, 50).replace(/\n/g, '') : "Empty";
-             debugLogs.push(`${endpoint.name} (${res.status}: ${snippet}...)`);
+             debugLogs.push(`${endpoint.name} (${status}: ${snippet}...)`);
              console.warn(`[BGG Sync] ${endpoint.name} returned invalid XML or HTML fallback. Snippet: ${snippet}...`);
           }
         } catch (err) {
