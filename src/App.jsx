@@ -4,8 +4,9 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection as firestoreCollection, onSnapshot, addDoc, doc, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 
-// Firebase Configuration using environment-provided variables
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+// --- SAFE FIREBASE INITIALIZATION ---
+const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+let firebaseConfig = {
   apiKey: "AIzaSyBbRbosmqtueb_rUjojNRZzpfvWk4wSiFc",
   authDomain: "boardgame-tracker-76d32.firebaseapp.com",
   projectId: "boardgame-tracker-76d32",
@@ -14,15 +15,23 @@ const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__f
   appId: "1:878855163365:web:1723f1e5ec50ae4bf1b30c"
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'boardgame-tracker-live';
+// Attempt to inject Canvas environment keys if they exist
+if (firebaseConfigStr) {
+  try {
+    firebaseConfig = JSON.parse(firebaseConfigStr);
+  } catch (e) {
+    console.warn("Could not parse injected firebase config");
+  }
+}
 
-/**
- * Main Application Component
- * Tracking Boardgame collection, play stats, and rankings.
- */
+// Only initialize Firebase if a real API key is present. This prevents app crashes!
+const isFirebaseValid = firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && firebaseConfig.apiKey !== "";
+const app = isFirebaseValid ? initializeApp(firebaseConfig) : null;
+const auth = isFirebaseValid ? getAuth(app) : null;
+const db = isFirebaseValid ? getFirestore(app) : null;
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
+
 export default function App() {
   const [username, setUsername] = useState('Inboundbreeze');
   const [collection, setCollection] = useState([]);
@@ -42,11 +51,11 @@ export default function App() {
   const [editingPlayId, setEditingPlayId] = useState(null);
   const fileInputRef = useRef(null);
   
-  // Use mock data by default for preview environment stability
-  const [useMockData, setUseMockData] = useState(true);
+  // Set to false for Live BGG Data
+  const [useMockData, setUseMockData] = useState(false);
 
   // Player Aliases State
-  const [aliases, setAliases] = useState({ "inboundbreeze": "Richard" }); 
+  const [aliases, setAliases] = useState({}); 
   const [showAliasModal, setShowAliasModal] = useState(false);
   const [aliasForm, setAliasForm] = useState({ from: '', to: '' });
   
@@ -69,21 +78,17 @@ export default function App() {
     { id: "1", name: "Terraforming Mars", year: "2016", plays: 12, myRating: 9.0, avgRating: 8.4, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/wg9oOLcsKvDesSUdZQ4rxw__itemrep/img/r2B9e3vI-k7F9B18R7YdG5p5J-g=/fit-in/246x300/filters:strip_icc()/pic3536616.jpg" },
     { id: "2", name: "Scythe", year: "2016", plays: 5, myRating: 8.5, avgRating: 8.2, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/7k_nGLr-fc4pE-aGjTqEzw__itemrep/img/rM6Nq-8EsqG_5gQ5tD8XvW5I-vY=/fit-in/246x300/filters:strip_icc()/pic3163924.jpg" },
     { id: "3", name: "Wingspan", year: "2019", plays: 24, myRating: 8.0, avgRating: 8.1, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/yLZJCVLlIxCGa7x12vQvNQ__itemrep/img/sH7hFq-fO6Aqz_18R8hH_N1R4A4=/fit-in/246x300/filters:strip_icc()/pic4458123.jpg" },
-    { id: "4", name: "Gloomhaven", year: "2017", plays: 45, myRating: 10.0, avgRating: 8.7, minPlayers: 1, maxPlayers: 4, image: "https://cf.geekdo-images.com/sZYp_3BTDGjh2unaZfZmuA__itemrep/img/D8_yB1E4d5xM-9gD1yqU4k_E0U=/fit-in/246x300/filters:strip_icc()/pic2437871.jpg" },
-    { id: "5", name: "Cascadia", year: "2021", plays: 8, myRating: null, avgRating: 7.9, minPlayers: 1, maxPlayers: 4, image: "https://cf.geekdo-images.com/MjeJZfulbsM1DSV3DrPWYA__itemrep/img/s2A_N-1R-d8M1Q1R_q8bM4R_0vI=/fit-in/246x300/filters:strip_icc()/pic5824761.jpg" },
-    { id: "6", name: "Brass: Birmingham", year: "2018", plays: 3, myRating: 9.5, avgRating: 8.6, minPlayers: 2, maxPlayers: 4, image: "https://cf.geekdo-images.com/x3zxbmTR4ZV0n12-2l3aaw__itemrep/img/v4I11W6VqLz_Y0s0Hh5I6h_X_M8=/fit-in/246x300/filters:strip_icc()/pic3490053.jpg" },
-    { id: "7", name: "Ark Nova", year: "2021", plays: 15, myRating: 8.8, avgRating: 8.5, minPlayers: 1, maxPlayers: 4, image: "https://cf.geekdo-images.com/BsqHbpWrd5FjiU2B2gUq6A__itemrep/img/F-4L1U-uQ-mH_5B_rA-XF1O9Bw=/fit-in/246x300/filters:strip_icc()/pic6223450.jpg" }
+    { id: "4", name: "Gloomhaven", year: "2017", plays: 45, myRating: 10.0, avgRating: 8.7, minPlayers: 1, maxPlayers: 4, image: "https://cf.geekdo-images.com/sZYp_3BTDGjh2unaZfZmuA__itemrep/img/D8_yB1E4d5xM-9gD1yqU4k_E0U=/fit-in/246x300/filters:strip_icc()/pic2437871.jpg" }
   ];
 
   const mockPlays = [
     { id: "101", date: "2023-10-24", game: "Terraforming Mars", image: "https://cf.geekdo-images.com/wg9oOLcsKvDesSUdZQ4rxw__itemrep/img/r2B9e3vI-k7F9B18R7YdG5p5J-g=/fit-in/246x300/filters:strip_icc()/pic3536616.jpg", players: [{ name: "Inboundbreeze", score: "88", win: true }, { name: "Alex", score: "75", win: false }] },
-    { id: "102", date: "2023-10-20", game: "Ark Nova", image: "https://cf.geekdo-images.com/BsqHbpWrd5FjiU2B2gUq6A__itemrep/img/F-4L1U-uQ-mH_5B_rA-XF1O9Bw=/fit-in/246x300/filters:strip_icc()/pic6223450.jpg", players: [{ name: "Inboundbreeze", score: "24", win: false }, { name: "Sarah", score: "35", win: true }] },
-    { id: "103", date: "2023-10-15", game: "Scythe", image: "https://cf.geekdo-images.com/7k_nGLr-fc4pE-aGjTqEzw__itemrep/img/rM6Nq-8EsqG_5gQ5tD8XvW5I-vY=/fit-in/246x300/filters:strip_icc()/pic3163924.jpg", players: [{ name: "Inboundbreeze", score: "62", win: true }, { name: "Alex", score: "55", win: false }, { name: "Sarah", score: "40", win: false }] }
+    { id: "102", date: "2023-10-20", game: "Ark Nova", image: "https://cf.geekdo-images.com/BsqHbpWrd5FjiU2B2gUq6A__itemrep/img/F-4L1U-uQ-mH_5B_rA-XF1O9Bw=/fit-in/246x300/filters:strip_icc()/pic6223450.jpg", players: [{ name: "Inboundbreeze", score: "24", win: false }, { name: "Sarah", score: "35", win: true }] }
   ];
 
-  // API LOGIC
   const fetchCollection = async (e) => {
     if (e) e.preventDefault();
+    
     if (useMockData) {
       setLoading(false);
       setError(null);
@@ -91,18 +96,32 @@ export default function App() {
       setPlaysData(mockPlays);
       return;
     }
+
+    if (!username.trim()) return;
+
     setLoading(true);
     setError(null);
 
-    const fetchBGG = async (targetUrl) => {
+    // Smart fetcher: Tries Vercel Serverless Function first, falls back to proxies for Canvas Preview
+    const fetchBGG = async (targetUrl, apiType) => {
+      try {
+        const apiRes = await fetch(`/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`);
+        if (apiRes.ok) {
+          return { text: await apiRes.text(), status: apiRes.status };
+        }
+      } catch (e) {
+        // Ignore errors from missing /api/bgg endpoint when running locally or in Canvas
+      }
+
       let responseText = null;
       let statusCode = null;
       let fetchError = null;
 
       const strategies = [
         async () => { const res = await fetch(targetUrl); return { text: await res.text(), status: res.status }; },
-        async () => { const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); const data = await res.json(); return { text: data.contents, status: data.status?.http_code || 200 }; },
-        async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
+        async () => { const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); const data = await res.json(); if (data.contents) return { text: data.contents, status: data.status?.http_code || 200 }; throw new Error("Invalid AllOrigins response"); },
+        async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
+        async () => { const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
       ];
 
       for (const strategy of strategies) {
@@ -117,126 +136,215 @@ export default function App() {
       }
 
       if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message}`);
+      
+      const lowerText = responseText.trim().toLowerCase();
+      if (lowerText.startsWith("<!doctype html>") || lowerText.startsWith("<html")) {
+        throw new Error(`Received HTML instead of XML. Proxy likely rate-limited.`);
+      }
+      
       return { text: responseText, status: statusCode };
     };
 
     try {
-      const collectionRes = await fetchBGG("/api/bgg?user=" + encodeURIComponent(username) + "&type=collection");
+      const collectionRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`, 'collection');
+      
       if (collectionRes.status === 202) {
-        setError("BGG is preparing your data. Please try again in 30 seconds.");
+        setError("BGG is preparing your data. This can take a few moments. Please click Sync again in 30 seconds.");
         setLoading(false);
         return;
       }
 
       const parser = new DOMParser();
       const collXml = parser.parseFromString(collectionRes.text, "text/xml");
+      const errorNode = collXml.querySelector("error message") || collXml.querySelector("message");
+      if (errorNode) throw new Error(`BGG API Message: ${errorNode.textContent}`);
+
       const items = collXml.querySelectorAll("item");
+      if (items.length === 0) throw new Error(`No games found for ${username}.`);
 
       const parsedGames = Array.from(items).map(item => {
         const statsNode = item.querySelector("stats");
+        const myRatingStr = statsNode?.querySelector("rating")?.getAttribute("value");
+        const avgRatingStr = statsNode?.querySelector("rating average")?.getAttribute("value");
+        
         return {
           id: item.getAttribute("objectid"),
           name: item.querySelector("name")?.textContent || "Unknown Game",
+          thumbnail: item.querySelector("thumbnail")?.textContent || null,
           image: item.querySelector("image")?.textContent || null,
           year: item.querySelector("yearpublished")?.textContent || "-",
           plays: parseInt(item.querySelector("numplays")?.textContent || "0", 10),
-          myRating: statsNode?.querySelector("rating")?.getAttribute("value") !== "N/A" ? parseFloat(statsNode?.querySelector("rating")?.getAttribute("value")) : null,
-          avgRating: parseFloat(statsNode?.querySelector("rating average")?.getAttribute("value")),
+          myRating: myRatingStr !== "N/A" ? parseFloat(myRatingStr) : null,
+          avgRating: avgRatingStr ? parseFloat(avgRatingStr) : null,
           minPlayers: parseInt(statsNode?.getAttribute("minplayers") || "0", 10),
           maxPlayers: parseInt(statsNode?.getAttribute("maxplayers") || "0", 10),
         };
       });
+
       setCollection(parsedGames);
 
       // Fetch plays history
-      const playsRes = await fetchBGG("/api/bgg?user=" + encodeURIComponent(username) + "&type=plays");
-      const playsXml = parser.parseFromString(playsRes.text, "text/xml");
-      const parsedPlays = Array.from(playsXml.querySelectorAll("play")).map(play => {
-        const itemNode = play.querySelector("item");
-        const matchedGame = parsedGames.find(g => g.id === itemNode?.getAttribute("objectid"));
-        return {
-          id: play.getAttribute("id"),
-          date: play.getAttribute("date"),
-          game: itemNode?.getAttribute("name") || "Unknown",
-          image: matchedGame?.image || null,
-          players: Array.from(play.querySelectorAll("player")).map(p => ({
-            name: p.getAttribute("name") || p.getAttribute("username") || "Anon",
+      try {
+        const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
+        const playsXml = parser.parseFromString(playsRes.text, "text/xml");
+        
+        const playNodes = playsXml.querySelectorAll("play");
+        const parsedPlays = Array.from(playNodes).map(play => {
+          const itemNode = play.querySelector("item");
+          const gameId = itemNode?.getAttribute("objectid");
+          const gameName = itemNode?.getAttribute("name") || "Unknown Game";
+          const matchedGame = parsedGames.find(g => g.id === gameId);
+          const playerNodes = play.querySelectorAll("player");
+          const players = Array.from(playerNodes).map(p => ({
+            name: p.getAttribute("name") || p.getAttribute("username") || "Anonymous",
             score: p.getAttribute("score"),
             win: p.getAttribute("win") === "1"
-          }))
-        };
-      });
-      setPlaysData(parsedPlays);
+          }));
+
+          return {
+            id: play.getAttribute("id"),
+            date: play.getAttribute("date"),
+            game: gameName,
+            image: matchedGame?.image || null,
+            players: players
+          };
+        });
+        setPlaysData(parsedPlays);
+      } catch (playErr) {
+        console.warn("Failed to fetch plays, continuing with collection...", playErr);
+        setPlaysData([]); 
+      }
+
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(false);
     }
   };
 
-  // DATA PROCESSING
+  // AUGMENT COLLECTION: Add Custom Cloud Plays to BGG Play Counts
   const augmentedCollection = useMemo(() => {
-    return collection.map(game => ({
-      ...game,
-      plays: game.plays + customPlays.filter(p => p.gameId === game.id).length
-    }));
+    return collection.map(game => {
+      const extraPlays = customPlays.filter(p => p.gameId === game.id || p.game === game.name).length;
+      return {
+        ...game,
+        plays: game.plays + extraPlays
+      };
+    });
   }, [collection, customPlays]);
 
   const sortedCollection = useMemo(() => {
-    let filtered = augmentedCollection.filter(g => {
-      const pMatch = filterPlayers === 'any' || (parseInt(filterPlayers) >= g.minPlayers && parseInt(filterPlayers) <= g.maxPlayers);
-      const rVal = filterRatingType === 'myRating' ? g.myRating : g.avgRating;
-      const rMatch = filterMinRating === '0' || (rVal && rVal >= parseFloat(filterMinRating));
-      return pMatch && rMatch;
-    });
-    return filtered.sort((a, b) => {
-      if (sortBy === 'plays') return b.plays - a.plays;
-      if (sortBy === 'myRating') return (b.myRating || 0) - (a.myRating || 0);
-      if (sortBy === 'avgRating') return b.avgRating - a.avgRating;
-      return a.name.localeCompare(b.name);
-    });
+    let filtered = [...augmentedCollection]; 
+
+    if (filterPlayers !== 'any') {
+      const pCount = parseInt(filterPlayers, 10);
+      filtered = filtered.filter(g => {
+        return (g.minPlayers === 0 && g.maxPlayers === 0) || (pCount >= g.minPlayers && pCount <= g.maxPlayers);
+      });
+    }
+
+    if (filterMinRating !== '0') {
+      const minScore = parseFloat(filterMinRating);
+      filtered = filtered.filter(g => {
+        const ratingValue = filterRatingType === 'myRating' ? g.myRating : g.avgRating;
+        return ratingValue !== null && ratingValue >= minScore;
+      });
+    }
+
+    switch (sortBy) {
+      case 'plays': return filtered.sort((a, b) => b.plays - a.plays);
+      case 'myRating': return filtered.sort((a, b) => (b.myRating || 0) - (a.myRating || 0));
+      case 'avgRating': return filtered.sort((a, b) => (b.avgRating || 0) - (a.avgRating || 0));
+      case 'name':
+      default: return filtered.sort((a, b) => a.name.localeCompare(b.name));
+    }
   }, [augmentedCollection, sortBy, filterPlayers, filterMinRating, filterRatingType]);
 
   const stats = useMemo(() => {
     if (!augmentedCollection.length) return null;
+
     const totalGames = augmentedCollection.length;
     const totalPlays = augmentedCollection.reduce((sum, game) => sum + game.plays, 0);
     const ratedGames = augmentedCollection.filter(g => g.myRating !== null);
     const avgRating = ratedGames.length ? (ratedGames.reduce((sum, g) => sum + g.myRating, 0) / ratedGames.length).toFixed(1) : 'N/A';
+
     const playCounts = augmentedCollection.map(g => g.plays).sort((a, b) => b - a);
     let hIndex = 0;
     while (hIndex < playCounts.length && playCounts[hIndex] > hIndex) hIndex++;
+
     const topPlayed = [...augmentedCollection].sort((a, b) => b.plays - a.plays).slice(0, 5);
     const topRated = [...augmentedCollection].filter(g => g.myRating).sort((a, b) => b.myRating - a.myRating).slice(0, 5);
+
     return { totalGames, totalPlays, avgRating, hIndex, topPlayed, topRated };
   }, [augmentedCollection]);
 
-  const combinedPlays = useMemo(() => [...customPlays, ...playsData].sort((a, b) => new Date(b.date) - new Date(a.date)), [playsData, customPlays]);
+  const combinedPlays = useMemo(() => {
+    return [...customPlays, ...playsData].sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [playsData, customPlays]);
 
   const playerStatsArray = useMemo(() => {
+    if (!combinedPlays || combinedPlays.length === 0) return [];
+    
     const pStats = {};
+
     combinedPlays.forEach(play => {
-      let players = play.players.map(p => ({ ...p, name: resolveName(p.name), score: parseFloat(p.score) || 0 }));
-      const hasWinner = players.some(p => p.win);
-      const maxScore = Math.max(...players.map(p => p.score));
-      players.forEach(p => {
-        if (!pStats[p.name]) pStats[p.name] = { name: p.name, plays: 0, wins: 0, placements: {} };
-        pStats[p.name].plays++;
-        const isWinner = hasWinner ? p.win : (p.score === maxScore && maxScore > 0);
-        if (isWinner) pStats[p.name].wins++;
+      if (!play.players || play.players.length === 0) return;
+
+      let sortedPlayers = [...play.players].map(p => ({
+        ...p,
+        resolvedName: resolveName(p.name),
+        parsedScore: parseFloat(p.score) || 0,
+        hasScore: p.score !== undefined && p.score !== null && p.score.toString().trim() !== '' && !isNaN(parseFloat(p.score))
+      }));
+
+      sortedPlayers.sort((a, b) => {
+        if (a.win && !b.win) return -1;
+        if (!a.win && b.win) return 1;
+        if (a.hasScore && b.hasScore) return b.parsedScore - a.parsedScore;
+        return 0;
+      });
+
+      let currentRank = 1;
+      let previousScore = null;
+      let previousWin = null;
+
+      sortedPlayers.forEach((p, index) => {
+        if (index > 0) {
+          if (p.hasScore && p.parsedScore !== previousScore) {
+             currentRank = index + 1;
+          } else if (!p.hasScore && p.win !== previousWin) {
+             currentRank = index + 1;
+          }
+        }
+
+        previousScore = p.parsedScore;
+        previousWin = p.win;
+        const name = p.resolvedName;
+
+        if (!pStats[name]) {
+          pStats[name] = { name: name, plays: 0, wins: 0, placements: {} };
+        }
+
+        pStats[name].plays += 1;
+        if (p.win || currentRank === 1) pStats[name].wins += 1;
+        pStats[name].placements[currentRank] = (pStats[name].placements[currentRank] || 0) + 1;
       });
     });
+
     return Object.values(pStats).sort((a, b) => b.plays - a.plays);
-  }, [combinedPlays, aliases]);
+  }, [combinedPlays, aliases]); 
 
   const topWinners = useMemo(() => {
     return [...playerStatsArray].filter(p => p.wins > 0).sort((a, b) => b.wins - a.wins).slice(0, 10);
   }, [playerStatsArray]);
 
-  const playerSuggestions = useMemo(() => playerStatsArray.map(p => p.name).sort(), [playerStatsArray]);
+  const playerSuggestions = useMemo(() => {
+    return playerStatsArray.map(p => p.name).sort((a, b) => a.localeCompare(b));
+  }, [playerStatsArray]);
 
-  // FIREBASE SYNC
+  // Firebase Auth Effect (Only runs if Firebase keys were valid)
   useEffect(() => {
+    if (!auth) return; 
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -244,114 +352,209 @@ export default function App() {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (error) { console.error("Auth error:", error); }
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+      }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
+  // Firebase Data Effect
   useEffect(() => {
-    if (!user) return;
-    const playsRef = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
-    const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
+    if (!user || !db) return;
     
-    const unsubPlays = onSnapshot(playsRef, snapshot => {
-      setCustomPlays(snapshot.docs.map(d => ({ firebaseId: d.id, ...d.data() })));
-    }, err => console.error("Firestore plays error:", err));
+    const playsRef = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+    const unsubscribePlays = onSnapshot(playsRef, (snapshot) => {
+      const plays = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
+      setCustomPlays(plays);
+    });
 
-    const unsubAlias = onSnapshot(aliasRef, docSnap => {
-      if (docSnap.exists()) setAliases(docSnap.data());
-    }, err => console.error("Firestore alias error:", err));
+    const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
+    const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setAliases(docSnap.data());
+      } else if (!useMockData) {
+        setAliases({}); 
+      }
+    });
 
-    fetchCollection();
-    return () => { unsubPlays(); unsubAlias(); };
+    return () => {
+      unsubscribePlays();
+      unsubscribeAliases();
+    };
   }, [user, useMockData]);
 
-  // FORM HANDLERS
-  const handleAddPlayer = () => setNewPlayForm(prev => ({ ...prev, players: [...prev.players, { name: '', score: '', win: false }] }));
-  const handlePlayerChange = (idx, field, val) => {
-    const players = [...newPlayForm.players];
-    players[idx][field] = val;
-    setNewPlayForm(prev => ({ ...prev, players }));
-  };
-  const handleRemovePlayer = (idx) => setNewPlayForm(prev => ({ ...prev, players: prev.players.filter((_, i) => i !== idx) }));
-
-  const handleSavePlay = async (e) => {
-    e.preventDefault();
-    if (!user) return;
-    const game = collection.find(g => g.id === newPlayForm.gameId);
-    let playersToSave = [...newPlayForm.players];
-    const hasManualWin = playersToSave.some(p => p.win);
-    if (!hasManualWin) {
-      const max = Math.max(...playersToSave.map(p => parseFloat(p.score) || 0));
-      if (max > 0) playersToSave = playersToSave.map(p => ({ ...p, win: (parseFloat(p.score) || 0) === max }));
-    }
-    const payload = {
-      date: newPlayForm.date,
-      gameId: newPlayForm.gameId,
-      game: game?.name || newPlayForm.gameName,
-      image: game?.image || null,
-      players: playersToSave.filter(p => p.name.trim() !== '')
-    };
-    try {
-      if (editingPlayId) {
-        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'plays', editingPlayId), payload);
-      } else {
-        await addDoc(firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays'), payload);
-      }
-      setShowAddPlay(false);
-      setEditingPlayId(null);
-      setNewPlayForm(initialPlayForm);
-    } catch (err) { console.error("Save error:", err); }
+  // Handle Adding Custom Play
+  const handleAddPlayer = () => {
+    setNewPlayForm(prev => ({ ...prev, players: [...prev.players, { name: '', score: '', win: false }] }));
   };
 
-  const handleDeletePlay = async (id) => {
-    if (confirm("Delete this play history?")) {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'plays', id));
-    }
+  const handlePlayerChange = (index, field, value) => {
+    const updatedPlayers = [...newPlayForm.players];
+    updatedPlayers[index][field] = value;
+    setNewPlayForm(prev => ({ ...prev, players: updatedPlayers }));
+  };
+
+  const handleRemovePlayer = (index) => {
+    const updatedPlayers = newPlayForm.players.filter((_, i) => i !== index);
+    setNewPlayForm(prev => ({ ...prev, players: updatedPlayers }));
   };
 
   const handleEditPlay = (play) => {
     setEditingPlayId(play.firebaseId);
     setNewPlayForm({
       gameId: play.gameId || '',
-      gameName: play.game,
+      gameName: play.game || '',
       date: play.date,
       players: play.players.map(p => ({ ...p }))
     });
     setShowAddPlay(true);
   };
 
-  // CSV IMPORT
+  const handleDeletePlay = async (firebaseId) => {
+    if (!user || !db) return;
+    try {
+      const playDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'plays', firebaseId);
+      await deleteDoc(playDoc);
+    } catch (error) {
+      console.error("Error deleting play:", error);
+    }
+  };
+
+  const handleAddCustomPlay = async (e) => {
+    e.preventDefault();
+    if (!user || !db) {
+      alert("Database connection is not active. Check your Firebase Keys.");
+      return;
+    }
+    
+    let gameId = newPlayForm.gameId;
+    let gameName = newPlayForm.gameName;
+    let image = null;
+
+    if (gameId) {
+      const gameObj = collection.find(g => g.id === gameId);
+      gameName = gameObj?.name || gameName;
+      image = gameObj?.image || null;
+    }
+
+    if (!gameName) {
+      alert("Please select or enter a game.");
+      return;
+    }
+
+    let playersToSave = [...newPlayForm.players];
+    const manuallySelectedWinner = playersToSave.some(p => p.win);
+    
+    if (!manuallySelectedWinner) {
+      const numericScores = playersToSave.map(p => parseFloat(p.score) || 0);
+      const maxScore = Math.max(...numericScores);
+      if (maxScore > 0) {
+        playersToSave = playersToSave.map(p => ({
+          ...p,
+          win: (parseFloat(p.score) || 0) === maxScore
+        }));
+      }
+    }
+    
+    try {
+      const playsColl = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+      const payload = {
+        id: editingPlayId ? editingPlayId : 'custom-' + Date.now(),
+        date: newPlayForm.date,
+        gameId: gameId,
+        game: gameName,
+        image: image, 
+        players: playersToSave.filter(p => p.name.trim() !== '') 
+      };
+
+      if (editingPlayId) {
+        const playDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'plays', editingPlayId);
+        await updateDoc(playDoc, payload);
+      } else {
+        await addDoc(playsColl, payload);
+      }
+      
+      setShowAddPlay(false);
+      setEditingPlayId(null);
+      setNewPlayForm(initialPlayForm);
+    } catch (error) {
+      console.error("Error saving play:", error);
+    }
+  };
+
   const handleCSVImport = async (e) => {
     const file = e.target.files[0];
-    if (!file || !user) return;
+    if (!file || !user || !db) return;
+
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const lines = event.target.result.split('\n').filter(l => l.trim() !== '').slice(1);
-      const batch = writeBatch(db);
-      lines.forEach((line, i) => {
-        const [date, gameName, ...parts] = line.split(',').map(s => s.trim());
+      const text = event.target.result;
+      const lines = text.split('\n').filter(line => line.trim() !== '');
+      if (lines.length <= 1) return; 
+
+      const playsToImport = [];
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',').map(p => p.trim());
+        const [date, gameName, ...playerParts] = parts;
+
+        if (!date || !gameName) continue;
+
         const players = [];
-        for (let j = 0; j < parts.length; j += 2) {
-          if (parts[j]) players.push({ name: parts[j], score: parts[j+1] || '', win: false });
+        for (let j = 0; j < playerParts.length; j += 2) {
+          if (playerParts[j]) {
+            players.push({
+              name: playerParts[j],
+              score: playerParts[j+1] || '',
+              win: false 
+            });
+          }
         }
-        const max = Math.max(...players.map(p => parseFloat(p.score) || 0));
-        const finalPlayers = players.map(p => ({ ...p, win: max > 0 ? (parseFloat(p.score) || 0) === max : false }));
-        const matched = collection.find(g => g.name.toLowerCase() === gameName.toLowerCase());
-        const ref = doc(firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays'));
-        batch.set(ref, { date, game: gameName, gameId: matched?.id || null, image: matched?.image || null, players: finalPlayers });
-      });
-      await batch.commit();
-      alert("Imported successfully.");
+
+        const scores = players.map(p => parseFloat(p.score) || 0);
+        const maxScore = Math.max(...scores);
+        const finalPlayers = players.map(p => ({
+          ...p,
+          win: maxScore > 0 ? (parseFloat(p.score) || 0) === maxScore : false
+        }));
+
+        const matchedGame = collection.find(g => g.name.toLowerCase() === gameName.toLowerCase());
+
+        playsToImport.push({
+          id: 'imported-' + Date.now() + '-' + i,
+          date,
+          game: gameName,
+          gameId: matchedGame?.id || null,
+          image: matchedGame?.image || null,
+          players: finalPlayers
+        });
+      }
+
+      try {
+        const batch = writeBatch(db);
+        const playsColl = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+        
+        playsToImport.forEach(play => {
+          const newDocRef = doc(playsColl);
+          batch.set(newDocRef, play);
+        });
+        
+        await batch.commit();
+        alert(`Successfully imported ${playsToImport.length} plays!`);
+      } catch (error) {
+        console.error("Batch import error:", error);
+        alert("Failed to import CSV. Check console for details.");
+      }
     };
     reader.readAsText(file);
+    e.target.value = null; 
   };
 
   const handleSaveAlias = async (e) => {
     e.preventDefault();
-    if (!user || !aliasForm.from.trim() || !aliasForm.to.trim()) return;
+    if (!user || !db || !aliasForm.from.trim() || !aliasForm.to.trim()) return;
     
     const newAliases = { 
       ...aliases, 
@@ -369,7 +572,7 @@ export default function App() {
   };
 
   const handleRemoveAlias = async (keyToRemove) => {
-    if (!user) return;
+    if (!user || !db) return;
     const newAliases = { ...aliases };
     delete newAliases[keyToRemove];
     
@@ -382,6 +585,7 @@ export default function App() {
     }
   };
 
+  // Load collection automatically on mount
   useEffect(() => {
     fetchCollection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -401,6 +605,8 @@ export default function App() {
             </div>
             
             <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
+              
+              {/* Dark Mode Toggle */}
               <button
                 onClick={() => setDarkMode(!darkMode)}
                 className="p-2 rounded-md bg-indigo-500 hover:bg-indigo-400 dark:bg-slate-700 dark:hover:bg-slate-600 transition-colors text-white flex items-center justify-center"
@@ -422,21 +628,37 @@ export default function App() {
                 {useMockData ? 'Using Mock Data' : 'Live Data Mode'}
               </button>
 
-              {/* Data Refresh Button */}
-              <button
-                onClick={fetchCollection}
-                disabled={loading || useMockData}
-                className="flex items-center space-x-2 bg-indigo-800 dark:bg-slate-700 hover:bg-indigo-900 dark:hover:bg-slate-600 text-white px-4 py-2 rounded-md transition-colors disabled:bg-slate-400 dark:disabled:bg-slate-600"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                <span className="text-sm font-medium">Sync with BGG</span>
-              </button>
+              <div className="relative flex items-center w-full sm:w-auto">
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="BGG Username..."
+                    disabled={useMockData}
+                    className="w-full sm:w-48 pl-4 pr-4 py-2 rounded-l-md border-0 text-slate-900 dark:text-white dark:bg-slate-700 shadow-inner focus:ring-2 focus:ring-indigo-300 dark:focus:ring-indigo-500 outline-none disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-500"
+                  />
+                  <button
+                    onClick={fetchCollection}
+                    disabled={loading || useMockData}
+                    className="bg-indigo-800 dark:bg-slate-600 hover:bg-indigo-900 dark:hover:bg-slate-500 text-white p-2 rounded-r-md transition-colors flex items-center justify-center h-full px-4 disabled:bg-slate-400 dark:disabled:bg-slate-600 disabled:cursor-not-allowed"
+                  >
+                    {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <RefreshCw className="h-5 w-5" />}
+                  </button>
+              </div>
             </div>
           </div>
         </header>
 
         <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
           
+          {/* Missing API Key Warning for Production */}
+          {!isFirebaseValid && !useMockData && (
+             <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
+               <AlertCircle className="h-5 w-5 mr-3 text-amber-600 dark:text-amber-400 shrink-0" />
+               <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx yet. You can still view your BGG data, but Custom Plays and Aliases cannot be saved.</p>
+            </div>
+          )}
+
           {useMockData && (
             <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
                <AlertCircle className="h-5 w-5 mr-3 text-amber-600 dark:text-amber-400" />
@@ -459,7 +681,7 @@ export default function App() {
               <Library className="h-16 w-16 text-slate-300 dark:text-slate-600 mx-auto mb-4" />
               <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-200">No Collection Loaded</h2>
               <p className="text-slate-500 dark:text-slate-400 mt-2 max-w-md mx-auto">
-                Sync with BoardGameGeek using the button above to load your library.
+                No games were found in this collection. Try searching a different username.
               </p>
             </div>
           )}
@@ -535,7 +757,11 @@ export default function App() {
                             className="bg-transparent text-slate-700 dark:text-slate-200 text-sm focus:ring-0 border-0 p-1 outline-none cursor-pointer w-full"
                           >
                             <option value="any">Any Players</option>
-                            {[1,2,3,4,5].map(n => <option key={n} value={n}>{n} {n===5?'+':''} Players</option>)}
+                            <option value="1">1 Player</option>
+                            <option value="2">2 Players</option>
+                            <option value="3">3 Players</option>
+                            <option value="4">4 Players</option>
+                            <option value="5">5+ Players</option>
                           </select>
                         </div>
 
@@ -814,6 +1040,7 @@ export default function App() {
                               </div>
                             </div>
 
+                            {/* Action Buttons for custom plays */}
                             {play.firebaseId && (
                               <div className="absolute right-4 top-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button 
@@ -1014,7 +1241,7 @@ export default function App() {
               </div>
               
               <div className="p-5 overflow-y-auto flex-1">
-                <form id="add-play-form" onSubmit={handleAddCustomPlay} className="space-y-5">
+                <form id="add-play-form" onSubmit={handleSavePlay} className="space-y-5">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="sm:col-span-2">
                       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Game <span className="text-red-500">*</span></label>
@@ -1147,7 +1374,7 @@ export default function App() {
                     <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Old Alias (e.g. Inboundbreeze)</label>
                     <input required type="text" value={aliasForm.from} onChange={e => setAliasForm({...aliasForm, from: e.target.value})} className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
                   </div>
-                  <ArrowRight className="h-5 w-5 text-slate-400 mb-2.5 shrink-0" />
+                  <ArrowRight className="h-5 w-5 text-slate-400 mb-2.5 shrink-0"/>
                   <div className="flex-1">
                     <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Main Name (e.g. Richard)</label>
                     <input required type="text" value={aliasForm.to} onChange={e => setAliasForm({...aliasForm, to: e.target.value})} className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
