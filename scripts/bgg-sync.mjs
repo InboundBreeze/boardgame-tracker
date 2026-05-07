@@ -3,10 +3,37 @@ import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getFirestore, doc, collection, writeBatch } from 'firebase/firestore';
 import { DOMParser } from 'xmldom'; // Requires: npm install xmldom
 
-// We will inject these via GitHub Secrets
-const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+// 1. Grab the secret
+let configStr = process.env.FIREBASE_CONFIG;
+
+if (!configStr) {
+  console.error("FATAL ERROR: FIREBASE_CONFIG secret is missing or empty.");
+  process.exit(1);
+}
+
+// 2. Bulletproof Parsing: Extract the object even if they pasted the whole 'const' block
+configStr = configStr.trim();
+const match = configStr.match(/\{[\s\S]*\}/);
+if (match) {
+    configStr = match[0];
+}
+
+let firebaseConfig;
+try {
+  // Try strict JSON first
+  firebaseConfig = JSON.parse(configStr);
+} catch (e) {
+  // Fallback: Relaxed parser that handles missing quotes around keys (standard JS object)
+  try {
+    firebaseConfig = new Function("return " + configStr)();
+  } catch (err) {
+    console.error("FATAL ERROR: Could not parse FIREBASE_CONFIG. Please ensure it is a valid object.");
+    process.exit(1);
+  }
+}
+
 const username = process.env.BGG_USERNAME || 'Inboundbreeze';
-const appId = 'boardgame-tracker'; // Must match your web app exactly
+const appId = 'boardgame-tracker-live'; // Must match your web app exactly
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
