@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, Database, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, Plus, X, Trash2, Settings, ArrowRight, Edit2, FileUp, RefreshCw } from 'lucide-react';
+import { Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, X, Trash2, Settings, ArrowRight, UploadCloud, Download, RefreshCw } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection as firestoreCollection, onSnapshot, addDoc, doc, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
 // --- SAFE FIREBASE INITIALIZATION ---
 const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
@@ -24,7 +24,6 @@ const app = isFirebaseValid ? initializeApp(firebaseConfig) : null;
 const auth = isFirebaseValid ? getAuth(app) : null;
 const db = isFirebaseValid ? getFirestore(app) : null;
 
-// Sanitize appId to ensure it is a valid single segment in Firestore paths
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
 const safeAppId = rawAppId.replace(/\//g, '_');
 
@@ -33,21 +32,21 @@ export default function App() {
   const [username] = useState('Inboundbreeze'); 
   
   const [collection, setCollection] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [playsData, setPlaysData] = useState([]); 
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [user, setUser] = useState(null); 
+  
+  // Dashboard State
   const [sortBy, setSortBy] = useState('name');
   const [filterPlayers, setFilterPlayers] = useState('any'); 
   const [filterMinRating, setFilterMinRating] = useState('0'); 
   const [filterRatingType, setFilterRatingType] = useState('avgRating'); 
   const [activeTab, setActiveTab] = useState('collection'); 
-  const [playsData, setPlaysData] = useState([]); 
   const [selectedPlayerName, setSelectedPlayerName] = useState(''); 
-  const [user, setUser] = useState(null); 
-  const [customPlays, setCustomPlays] = useState([]); 
-  const [showAddPlay, setShowAddPlay] = useState(false); 
-  const [editingPlayId, setEditingPlayId] = useState(null);
-  const fileInputRef = useRef(null);
+  const [showManualSync, setShowManualSync] = useState(false);
 
+  // Alias State
   const [aliases, setAliases] = useState({}); 
   const [showAliasModal, setShowAliasModal] = useState(false);
   const [aliasForm, setAliasForm] = useState({ from: '', to: '' });
@@ -58,216 +57,203 @@ export default function App() {
     return aliases[lowerName] || name.trim();
   };
 
-  const initialPlayForm = { 
-    gameId: '', 
-    gameName: '', 
-    date: new Date().toISOString().split('T')[0], 
-    players: [{ name: resolveName(username), score: '', win: false }] 
+  // --- FIREBASE AUTH & ALIAS SYNC ---
+  useEffect(() => {
+    if (!auth) return; 
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) { console.error("Auth initialization error:", error); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user || !db) return;
+    
+    // Listen for aliases saved in cloud
+    const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
+    const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setAliases(docSnap.data());
+      } else {
+        setAliases({}); 
+      }
+    });
+
+    return () => unsubscribeAliases();
+  }, [user]);
+
+  // --- MANUAL XML PARSING LOGIC ---
+  const parseCollectionXML = (xmlText) => {
+    const parser = new DOMParser();
+    const collXml = parser.parseFromString(xmlText, "text/xml");
+    const errorNode = collXml.querySelector("error message") || collXml.querySelector("message");
+    if (errorNode) throw new Error(`BGG API Message: ${errorNode.textContent}`);
+
+    const items = collXml.querySelectorAll("item");
+    if (items.length === 0) throw new Error(`No games found in the provided XML.`);
+
+    const parsedGames = Array.from(items).map(item => {
+      const statsNode = item.querySelector("stats");
+      const myRatingStr = statsNode?.querySelector("rating")?.getAttribute("value");
+      const avgRatingStr = statsNode?.querySelector("rating average")?.getAttribute("value");
+      
+      return {
+        id: item.getAttribute("objectid"),
+        name: item.querySelector("name")?.textContent || "Unknown Game",
+        thumbnail: item.querySelector("thumbnail")?.textContent || null,
+        image: item.querySelector("image")?.textContent || null,
+        year: item.querySelector("yearpublished")?.textContent || "-",
+        plays: parseInt(item.querySelector("numplays")?.textContent || "0", 10),
+        myRating: myRatingStr !== "N/A" ? parseFloat(myRatingStr) : null,
+        avgRating: avgRatingStr ? parseFloat(avgRatingStr) : null,
+        minPlayers: parseInt(statsNode?.getAttribute("minplayers") || "0", 10),
+        maxPlayers: parseInt(statsNode?.getAttribute("maxplayers") || "0", 10),
+      };
+    });
+
+    setCollection(parsedGames);
+    return parsedGames;
   };
 
-  const [newPlayForm, setNewPlayForm] = useState(initialPlayForm); 
+  const parsePlaysXML = (xmlText, currentCollection) => {
+    const parser = new DOMParser();
+    const playsXml = parser.parseFromString(xmlText, "text/xml");
+    
+    const playNodes = playsXml.querySelectorAll("play");
+    
+    const parsedPlays = Array.from(playNodes).map(play => {
+      const itemNode = play.querySelector("item");
+      const gameId = itemNode?.getAttribute("objectid");
+      const gameName = itemNode?.getAttribute("name") || "Unknown Game";
+      const matchedGame = currentCollection.find(g => g.id === gameId);
+      const playerNodes = play.querySelectorAll("player");
+      const players = Array.from(playerNodes).map(p => ({
+        name: p.getAttribute("name") || p.getAttribute("username") || "Anonymous",
+        score: p.getAttribute("score"),
+        win: p.getAttribute("win") === "1"
+      }));
 
-  const fetchCollection = async (e) => {
+      return {
+        id: play.getAttribute("id"),
+        date: play.getAttribute("date"),
+        game: gameName,
+        image: matchedGame?.image || null,
+        players: players
+      };
+    });
+    setPlaysData(parsedPlays);
+  };
+
+  const handleCollectionUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        parseCollectionXML(event.target.result);
+        setError(null);
+        setShowManualSync(false);
+      } catch (err) { setError("Failed to parse Collection XML: " + err.message); }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  const handlePlaysUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        parsePlaysXML(event.target.result, collection);
+        setError(null);
+        setShowManualSync(false);
+      } catch (err) { setError("Failed to parse Plays XML: " + err.message); }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  // --- AUTOMATIC FETCHING ---
+  const fetchCollectionAuto = async (e) => {
     if (e) e.preventDefault();
     setLoading(true);
     setError(null);
 
     const fetchBGG = async (targetUrl, apiType) => {
-      console.log(`\n--- [BGG Sync] Starting fetch for: ${apiType} ---`);
-      console.log(`[BGG Sync] Target URL: ${targetUrl}`);
-      
-      const debugLogs = [];
       let finalResponse = null;
       let finalStatus = null;
       let isRateLimited = false;
 
-      const endpoints = [];
-      // Prevent relative URL fetching in sandboxed environments
-      const isSandboxEnvironment = window.location.protocol.includes('blob') || window.location.origin === 'null' || window.location.hostname.includes('usercontent.goog');
-      
-      if (!isSandboxEnvironment) {
-        // 1. Vite Local Proxy (Solves local dev CORS automatically)
-        endpoints.push({ name: "Vite Proxy", url: `/bgg-proxy/xmlapi2/${apiType === 'plays' ? 'plays' : 'collection'}?username=${encodeURIComponent(username)}${apiType === 'collection' ? '&stats=1' : ''}`, isJson: false });
-        // 2. Vercel Serverless Function (For Production)
-        endpoints.push({ name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`, isJson: false });
-      }
-
-      // 3. Fallback Public Proxies
-      endpoints.push(
-        { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, isJson: false },
-        { name: "AllOrigins (JSON)", url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, isJson: true },
-        { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}`, isJson: false },
-        { name: "Direct", url: targetUrl, isJson: false }
-      );
+      // Prioritize Direct Fetch (Assumes CORS extension is active or running locally via Vite proxy)
+      const endpoints = [
+        { name: "Direct", url: targetUrl },
+        { name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}` },
+        { name: "Vite Proxy", url: `/bgg-proxy/xmlapi2/${apiType === 'plays' ? 'plays' : 'collection'}?username=${encodeURIComponent(username)}${apiType === 'collection' ? '&stats=1' : ''}` },
+        { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}` }
+      ];
 
       for (const endpoint of endpoints) {
-        console.log(`[BGG Sync] Attempting endpoint: ${endpoint.name}`);
         try {
           const res = await fetch(endpoint.url);
-          console.log(`[BGG Sync] ${endpoint.name} returned status: ${res.status}`);
-          
-          if (res.status === 429) {
-            isRateLimited = true;
-            debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
-            console.warn(`[BGG Sync] ${endpoint.name} hit BGG Rate Limit (429).`);
-            continue;
-          }
+          if (res.status === 429) { isRateLimited = true; continue; }
 
-          let text = "";
-          let status = res.status;
-
-          // Process JSON proxies vs Raw proxies
-          if (endpoint.isJson) {
-            const rawText = await res.text();
-            if (!rawText) throw new Error("Empty response");
-            try {
-              const data = JSON.parse(rawText);
-              text = data.contents || "";
-              status = data.status?.http_code || res.status;
-            } catch (e) {
-              throw new Error("Invalid JSON: " + e.message);
-            }
-            
-            if (status === 429) {
-              isRateLimited = true;
-              debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
-              console.warn(`[BGG Sync] ${endpoint.name} hit BGG Rate Limit (429) within JSON.`);
-              continue;
-            }
-          } else {
-            text = await res.text();
-          }
-          
-          // Validate it's actually XML and not an HTML error page or SPA fallback
-          // Also check length > 20 to reject "200: Empty..." responses from struggling proxies
-          if ((res.ok || (endpoint.isJson && text)) && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
-            console.log(`[BGG Sync] ${endpoint.name} SUCCESS! Fetched ${text.length} characters of XML.`);
+          const text = await res.text();
+          if (res.ok && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
             finalResponse = text;
-            finalStatus = status;
-            break; // Success! Stop checking endpoints.
-          } else {
-             const snippet = text ? text.substring(0, 50).replace(/\n/g, '') : "Empty";
-             debugLogs.push(`${endpoint.name} (${status}: ${snippet}...)`);
-             console.warn(`[BGG Sync] ${endpoint.name} returned invalid XML or HTML fallback. Snippet: ${snippet}...`);
+            finalStatus = res.status;
+            break; 
           }
-        } catch (err) {
-          console.error(`[BGG Sync] ${endpoint.name} Network Error:`, err);
-          debugLogs.push(`${endpoint.name} (Network Error: ${err.message})`);
-        }
+        } catch (err) { /* ignore and try next */ }
       }
 
       if (!finalResponse) {
-        console.error(`[BGG Sync] ALL endpoints failed for ${apiType}.`);
         if (isRateLimited) throw new Error("BGG Rate Limit Reached (429). Please wait 60 seconds.");
-        if (isSandboxEnvironment) {
-          throw new Error("Preview Environment Blocked: Public proxies are failing to fetch BGG data. Please use the 'Live Data Mode' toggle above to view Mock Data, or deploy to Vercel to use the secure serverless API.");
-        }
-        throw new Error(`Sync failed. Debug Log: ${debugLogs.join(" | ")}`);
+        throw new Error(`Auto-Sync failed due to CORS or BGG Bot Protection. If you are on PC, please install a "Allow CORS" browser extension and try again, or use Manual Import.`);
       }
 
       return { text: finalResponse, status: finalStatus };
     };
 
     try {
-      console.log("[BGG Sync] Initiating Collection Fetch...");
       const collectionRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`, 'collection');
       
       if (collectionRes.status === 202) {
-        console.log("[BGG Sync] Received 202 Accepted. BGG is preparing the collection.");
-        setError("BGG is preparing your data. This can take a few moments. Please click Sync again in 30 seconds.");
+        setError("BGG is preparing your data. This can take a few moments. Please click Auto Sync again in 30 seconds.");
         setLoading(false);
         return;
       }
 
-      const parser = new DOMParser();
-      const collXml = parser.parseFromString(collectionRes.text, "text/xml");
-      const errorNode = collXml.querySelector("error message") || collXml.querySelector("message");
-      if (errorNode) throw new Error(`BGG API Message: ${errorNode.textContent}`);
+      const parsedGames = parseCollectionXML(collectionRes.text);
 
-      const items = collXml.querySelectorAll("item");
-      console.log(`[BGG Sync] Successfully parsed ${items.length} games from collection XML.`);
-      if (items.length === 0) throw new Error(`No games found for ${username}.`);
-
-      const parsedGames = Array.from(items).map(item => {
-        const statsNode = item.querySelector("stats");
-        const myRatingStr = statsNode?.querySelector("rating")?.getAttribute("value");
-        const avgRatingStr = statsNode?.querySelector("rating average")?.getAttribute("value");
-        
-        return {
-          id: item.getAttribute("objectid"),
-          name: item.querySelector("name")?.textContent || "Unknown Game",
-          thumbnail: item.querySelector("thumbnail")?.textContent || null,
-          image: item.querySelector("image")?.textContent || null,
-          year: item.querySelector("yearpublished")?.textContent || "-",
-          plays: parseInt(item.querySelector("numplays")?.textContent || "0", 10),
-          myRating: myRatingStr !== "N/A" ? parseFloat(myRatingStr) : null,
-          avgRating: avgRatingStr ? parseFloat(avgRatingStr) : null,
-          minPlayers: parseInt(statsNode?.getAttribute("minplayers") || "0", 10),
-          maxPlayers: parseInt(statsNode?.getAttribute("maxplayers") || "0", 10),
-        };
-      });
-
-      setCollection(parsedGames);
-
-      // DELAY added to prevent BGG 429 Rate Limiting
-      console.log("[BGG Sync] Waiting 1.5 seconds to avoid rate limits before fetching plays...");
+      // Delay to avoid hitting BGG's 429 Rate Limiter
       await new Promise(resolve => setTimeout(resolve, 1500));
 
       try {
-        console.log("[BGG Sync] Initiating Plays Fetch...");
         const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
-        const playsXml = parser.parseFromString(playsRes.text, "text/xml");
-        
-        const playNodes = playsXml.querySelectorAll("play");
-        console.log(`[BGG Sync] Successfully parsed ${playNodes.length} plays from XML.`);
-        
-        const parsedPlays = Array.from(playNodes).map(play => {
-          const itemNode = play.querySelector("item");
-          const gameId = itemNode?.getAttribute("objectid");
-          const gameName = itemNode?.getAttribute("name") || "Unknown Game";
-          const matchedGame = parsedGames.find(g => g.id === gameId);
-          const playerNodes = play.querySelectorAll("player");
-          const players = Array.from(playerNodes).map(p => ({
-            name: p.getAttribute("name") || p.getAttribute("username") || "Anonymous",
-            score: p.getAttribute("score"),
-            win: p.getAttribute("win") === "1"
-          }));
-
-          return {
-            id: play.getAttribute("id"),
-            date: play.getAttribute("date"),
-            game: gameName,
-            image: matchedGame?.image || null,
-            players: players
-          };
-        });
-        setPlaysData(parsedPlays);
-        console.log("[BGG Sync] Complete Sync Finished Successfully.");
+        parsePlaysXML(playsRes.text, parsedGames);
       } catch (playErr) {
-        console.error("[BGG Sync] Failed to fetch plays, continuing with collection:", playErr);
-        setPlaysData([]); 
+        console.warn("Failed to fetch plays via API, continuing with collection...", playErr);
       }
 
     } catch (err) {
-      console.error("[BGG Sync] FATAL SYNC ERROR:", err);
-      setError(err.message || "An unexpected error occurred.");
+      setError(err.message || "An unexpected error occurred. Please use Manual Import.");
     } finally {
       setLoading(false);
     }
   };
 
-  const augmentedCollection = useMemo(() => {
-    return collection.map(game => {
-      const extraPlays = customPlays.filter(p => p.gameId === game.id || p.game === game.name).length;
-      return {
-        ...game,
-        plays: game.plays + extraPlays
-      };
-    });
-  }, [collection, customPlays]);
-
+  // --- DATA PROCESSING ---
   const sortedCollection = useMemo(() => {
-    let filtered = [...augmentedCollection]; 
+    let filtered = [...collection]; 
 
     if (filterPlayers !== 'any') {
       const pCount = parseInt(filterPlayers, 10);
@@ -291,29 +277,29 @@ export default function App() {
       case 'name':
       default: return filtered.sort((a, b) => a.name.localeCompare(b.name));
     }
-  }, [augmentedCollection, sortBy, filterPlayers, filterMinRating, filterRatingType]);
+  }, [collection, sortBy, filterPlayers, filterMinRating, filterRatingType]);
 
   const stats = useMemo(() => {
-    if (!augmentedCollection.length) return null;
+    if (!collection.length) return null;
 
-    const totalGames = augmentedCollection.length;
-    const totalPlays = augmentedCollection.reduce((sum, game) => sum + game.plays, 0);
-    const ratedGames = augmentedCollection.filter(g => g.myRating !== null);
+    const totalGames = collection.length;
+    const totalPlays = collection.reduce((sum, game) => sum + game.plays, 0);
+    const ratedGames = collection.filter(g => g.myRating !== null);
     const avgRating = ratedGames.length ? (ratedGames.reduce((sum, g) => sum + g.myRating, 0) / ratedGames.length).toFixed(1) : 'N/A';
 
-    const playCounts = augmentedCollection.map(g => g.plays).sort((a, b) => b - a);
+    const playCounts = collection.map(g => g.plays).sort((a, b) => b - a);
     let hIndex = 0;
     while (hIndex < playCounts.length && playCounts[hIndex] > hIndex) hIndex++;
 
-    const topPlayed = [...augmentedCollection].sort((a, b) => b.plays - a.plays).slice(0, 5);
-    const topRated = [...augmentedCollection].filter(g => g.myRating).sort((a, b) => b.myRating - a.myRating).slice(0, 5);
+    const topPlayed = [...collection].sort((a, b) => b.plays - a.plays).slice(0, 5);
+    const topRated = [...collection].filter(g => g.myRating).sort((a, b) => b.myRating - a.myRating).slice(0, 5);
 
     return { totalGames, totalPlays, avgRating, hIndex, topPlayed, topRated };
-  }, [augmentedCollection]);
+  }, [collection]);
 
   const combinedPlays = useMemo(() => {
-    return [...customPlays, ...playsData].sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [playsData, customPlays]);
+    return [...playsData].sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [playsData]);
 
   const playerStatsArray = useMemo(() => {
     if (!combinedPlays || combinedPlays.length === 0) return [];
@@ -371,253 +357,44 @@ export default function App() {
     return [...playerStatsArray].filter(p => p.wins > 0).sort((a, b) => b.wins - a.wins).slice(0, 10);
   }, [playerStatsArray]);
 
-  const playerSuggestions = useMemo(() => {
-    return playerStatsArray.map(p => p.name).sort((a, b) => a.localeCompare(b));
-  }, [playerStatsArray]);
-
-  useEffect(() => {
-    if (!auth) return; 
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Auth initialization error:", error);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!user || !db) return;
-    
-    const playsRef = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
-    const unsubscribePlays = onSnapshot(playsRef, (snapshot) => {
-      const plays = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
-      setCustomPlays(plays);
-    });
-
-    const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
-    const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setAliases(docSnap.data());
-      } else {
-        setAliases({}); 
-      }
-    });
-
-    return () => {
-      unsubscribePlays();
-      unsubscribeAliases();
-    };
-  }, [user]);
-
   // Load collection automatically on mount
   useEffect(() => {
-    fetchCollection();
+    fetchCollectionAuto();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAddPlayer = () => {
-    setNewPlayForm(prev => ({ ...prev, players: [...prev.players, { name: '', score: '', win: false }] }));
-  };
-
-  const handlePlayerChange = (index, field, value) => {
-    const updatedPlayers = [...newPlayForm.players];
-    updatedPlayers[index][field] = value;
-    setNewPlayForm(prev => ({ ...prev, players: updatedPlayers }));
-  };
-
-  const handleRemovePlayer = (index) => {
-    const updatedPlayers = newPlayForm.players.filter((_, i) => i !== index);
-    setNewPlayForm(prev => ({ ...prev, players: updatedPlayers }));
-  };
-
-  const handleEditPlay = (play) => {
-    setEditingPlayId(play.firebaseId);
-    setNewPlayForm({
-      gameId: play.gameId || '',
-      gameName: play.game || '',
-      date: play.date,
-      players: play.players.map(p => ({ ...p }))
-    });
-    setShowAddPlay(true);
-  };
-
-  const handleDeletePlay = async (firebaseId) => {
-    if (!user || !db) return;
-    try {
-      const playDoc = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'plays', firebaseId);
-      await deleteDoc(playDoc);
-    } catch (error) {
-      console.error("Error deleting play:", error);
-    }
-  };
-
-  const handleAddCustomPlay = async (e) => {
-    e.preventDefault();
-    if (!user || !db) {
-      alert("Database connection is not active. Check your Firebase Keys.");
-      return;
-    }
-    
-    let gameId = newPlayForm.gameId;
-    let gameName = newPlayForm.gameName;
-    let image = null;
-
-    if (gameId) {
-      const gameObj = collection.find(g => g.id === gameId);
-      gameName = gameObj?.name || gameName;
-      image = gameObj?.image || null;
-    }
-
-    if (!gameName) {
-      alert("Please select or enter a game.");
-      return;
-    }
-
-    let playersToSave = [...newPlayForm.players];
-    const manuallySelectedWinner = playersToSave.some(p => p.win);
-    
-    if (!manuallySelectedWinner) {
-      const numericScores = playersToSave.map(p => parseFloat(p.score) || 0);
-      const maxScore = Math.max(...numericScores);
-      if (maxScore > 0) {
-        playersToSave = playersToSave.map(p => ({
-          ...p,
-          win: (parseFloat(p.score) || 0) === maxScore
-        }));
-      }
-    }
-    
-    try {
-      const playsColl = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
-      const payload = {
-        id: editingPlayId ? editingPlayId : 'custom-' + Date.now(),
-        date: newPlayForm.date,
-        gameId: gameId,
-        game: gameName,
-        image: image, 
-        players: playersToSave.filter(p => p.name.trim() !== '') 
-      };
-
-      if (editingPlayId) {
-        const playDoc = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'plays', editingPlayId);
-        await updateDoc(playDoc, payload);
-      } else {
-        await addDoc(playsColl, payload);
-      }
-      
-      setShowAddPlay(false);
-      setEditingPlayId(null);
-      setNewPlayForm(initialPlayForm);
-    } catch (error) {
-      console.error("Error saving play:", error);
-    }
-  };
-
-  const handleCSVImport = async (e) => {
-    const file = e.target.files[0];
-    if (!file || !user || !db) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const text = event.target.result;
-      const lines = text.split('\n').filter(line => line.trim() !== '');
-      if (lines.length <= 1) return; 
-
-      const playsToImport = [];
-      for (let i = 1; i < lines.length; i++) {
-        const parts = lines[i].split(',').map(p => p.trim());
-        const [date, gameName, ...playerParts] = parts;
-
-        if (!date || !gameName) continue;
-
-        const players = [];
-        for (let j = 0; j < playerParts.length; j += 2) {
-          if (playerParts[j]) {
-            players.push({
-              name: playerParts[j],
-              score: playerParts[j+1] || '',
-              win: false 
-            });
-          }
-        }
-
-        const scores = players.map(p => parseFloat(p.score) || 0);
-        const maxScore = Math.max(...scores);
-        const finalPlayers = players.map(p => ({
-          ...p,
-          win: maxScore > 0 ? (parseFloat(p.score) || 0) === maxScore : false
-        }));
-
-        const matchedGame = collection.find(g => g.name.toLowerCase() === gameName.toLowerCase());
-
-        playsToImport.push({
-          id: 'imported-' + Date.now() + '-' + i,
-          date,
-          game: gameName,
-          gameId: matchedGame?.id || null,
-          image: matchedGame?.image || null,
-          players: finalPlayers
-        });
-      }
-
-      try {
-        const batch = writeBatch(db);
-        const playsColl = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
-        
-        playsToImport.forEach(play => {
-          const newDocRef = doc(playsColl);
-          batch.set(newDocRef, play);
-        });
-        
-        await batch.commit();
-        alert(`Successfully imported ${playsToImport.length} plays!`);
-      } catch (error) {
-        console.error("Batch import error:", error);
-        alert("Failed to import CSV. Check console for details.");
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = null; 
-  };
-
+  // --- ALIAS HANDLERS ---
   const handleSaveAlias = async (e) => {
     e.preventDefault();
-    if (!user || !db || !aliasForm.from.trim() || !aliasForm.to.trim()) return;
+    if (!aliasForm.from.trim() || !aliasForm.to.trim()) return;
     
     const newAliases = { 
       ...aliases, 
       [aliasForm.from.trim().toLowerCase()]: aliasForm.to.trim() 
     };
-    
-    try {
-      const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
-      await setDoc(aliasRef, newAliases);
-      setAliasForm({ from: '', to: '' });
-      setAliases(newAliases);
-    } catch (error) {
-      console.error("Error saving alias:", error);
+
+    setAliases(newAliases); 
+    setAliasForm({ from: '', to: '' });
+
+    if (user && db) {
+      try {
+        const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
+        await setDoc(aliasRef, newAliases);
+      } catch (error) { console.error("Error saving alias to cloud:", error); }
     }
   };
 
   const handleRemoveAlias = async (keyToRemove) => {
-    if (!user || !db) return;
     const newAliases = { ...aliases };
     delete newAliases[keyToRemove];
     
-    try {
-      const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
-      await setDoc(aliasRef, newAliases);
-      setAliases(newAliases);
-    } catch (error) {
-      console.error("Error removing alias:", error);
+    setAliases(newAliases);
+
+    if (user && db) {
+      try {
+        const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
+        await setDoc(aliasRef, newAliases);
+      } catch (error) { console.error("Error removing alias from cloud:", error); }
     }
   };
 
@@ -634,13 +411,21 @@ export default function App() {
               </div>
             </div>
             
-            <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
+            <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
               <button
-                onClick={fetchCollection}
-                disabled={loading}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-6 rounded-lg transition-colors flex items-center justify-center shadow-sm disabled:bg-slate-600 disabled:cursor-not-allowed w-full sm:w-auto"
+                onClick={() => setShowManualSync(true)}
+                className="bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm w-full sm:w-auto"
               >
-                {loading ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <RefreshCw className="h-5 w-5 mr-2" />}
+                <UploadCloud className="h-4 w-4 mr-2" />
+                <span className="font-medium text-sm">Manual Import</span>
+              </button>
+              
+              <button
+                onClick={fetchCollectionAuto}
+                disabled={loading}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm disabled:bg-slate-600 disabled:cursor-not-allowed w-full sm:w-auto"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
                 <span className="font-medium text-sm">Sync with BGG</span>
               </button>
             </div>
@@ -649,31 +434,39 @@ export default function App() {
 
         <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
           
-          {/* Missing API Key Warning for Production */}
           {!isFirebaseValid && (
              <div className="bg-amber-900/30 border border-amber-800 text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
                <AlertCircle className="h-5 w-5 mr-3 text-amber-400 shrink-0" />
-               <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx yet. You can still view your BGG data, but Custom Plays and Aliases cannot be saved.</p>
+               <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx. Your Dashboard will still pull from BGG, but Player Aliases won't be saved to the cloud.</p>
             </div>
           )}
 
           {error && (
-            <div className="bg-red-900/30 border-l-4 border-red-500 p-4 mb-8 rounded-r-md shadow-sm flex items-start">
+            <div className="bg-red-900/30 border-l-4 border-red-500 p-4 mb-8 rounded-r-md shadow-sm flex items-start flex-col sm:flex-row">
               <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 mr-3 flex-shrink-0" />
               <div className="flex-1">
-                <h3 className="text-red-300 font-medium">Error loading collection</h3>
+                <h3 className="text-red-300 font-medium">Error syncing with BoardGameGeek</h3>
                 <p className="text-red-400 text-sm mt-1 font-mono break-words">{error}</p>
+                <button onClick={() => setShowManualSync(true)} className="mt-3 bg-red-800/50 hover:bg-red-800 text-red-100 px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center">
+                  <UploadCloud className="h-4 w-4 mr-2" /> Try Manual Import
+                </button>
               </div>
             </div>
           )}
 
           {!loading && collection.length === 0 && !error && (
             <div className="text-center py-20 bg-slate-800 rounded-xl shadow-sm border border-slate-700">
-              <Library className="h-16 w-16 text-slate-600 mx-auto mb-4" />
+              <UploadCloud className="h-16 w-16 text-slate-600 mx-auto mb-4" />
               <h2 className="text-xl font-semibold text-slate-200">No Collection Loaded</h2>
-              <p className="text-slate-400 mt-2 max-w-md mx-auto">
-                Sync with BoardGameGeek using the button above to load your library.
+              <p className="text-slate-400 mt-2 mb-6 max-w-md mx-auto">
+                BGG limits automated access. The most reliable way to view your data is via Manual Import, or by enabling a CORS extension in your browser.
               </p>
+              <button 
+                onClick={() => setShowManualSync(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-sm inline-flex items-center"
+              >
+                <UploadCloud className="h-5 w-5 mr-2" /> Upload BGG Data
+              </button>
             </div>
           )}
 
@@ -736,7 +529,7 @@ export default function App() {
                   <div className="flex flex-col bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-700 gap-4">
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                       <div className="text-slate-300 font-medium whitespace-nowrap">
-                        Showing <span className="text-indigo-400">{sortedCollection.length}</span> of {augmentedCollection.length} games
+                        Showing <span className="text-indigo-400">{sortedCollection.length}</span> of {collection.length} games
                       </div>
                       
                       <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
@@ -950,29 +743,6 @@ export default function App() {
                       </div>
                       <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                         <span className="text-sm text-slate-400 font-medium hidden md:inline mr-2">Showing latest {combinedPlays.length} sessions</span>
-                        <input 
-                          type="file" 
-                          ref={fileInputRef} 
-                          className="hidden" 
-                          accept=".csv" 
-                          onChange={handleCSVImport}
-                        />
-                        <button 
-                          onClick={() => fileInputRef.current.click()}
-                          className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center shadow-sm"
-                        >
-                          <FileUp className="h-4 w-4 mr-1" /> Import CSV
-                        </button>
-                        <button 
-                          onClick={() => {
-                            setEditingPlayId(null);
-                            setNewPlayForm(initialPlayForm);
-                            setShowAddPlay(true);
-                          }}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center shadow-sm"
-                        >
-                          <Plus className="h-4 w-4 mr-1" /> Log Play
-                        </button>
                       </div>
                     </div>
                     
@@ -980,18 +750,12 @@ export default function App() {
                       <div className="p-8 text-center text-slate-400">
                         <Calendar className="h-12 w-12 mx-auto mb-3 text-slate-600" />
                         <p>No recent plays found.</p>
-                        <p className="text-sm mt-1 mb-4">Log some plays on BoardGameGeek to see them appear here, or add your own!</p>
-                        <button 
-                          onClick={() => setShowAddPlay(true)}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors inline-flex items-center shadow-sm"
-                        >
-                          <Plus className="h-4 w-4 mr-2" /> Log Your First Play
-                        </button>
+                        <p className="text-sm mt-1 mb-4">You have a collection loaded, but no plays were found in the Plays XML file.</p>
                       </div>
                     ) : (
                       <ul className="divide-y divide-slate-700">
                         {combinedPlays.map((play) => (
-                          <li key={play.firebaseId || play.id} className="p-6 hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-6 items-start sm:items-center relative group">
+                          <li key={play.id} className="p-6 hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-6 items-start sm:items-center relative group">
                             <div className="flex items-center gap-4 w-full sm:w-1/3">
                               <div className="h-16 w-16 bg-slate-700 rounded-lg overflow-hidden flex-shrink-0 border border-slate-600 flex items-center justify-center">
                                 {play.image ? (
@@ -1030,26 +794,6 @@ export default function App() {
                                 )}
                               </div>
                             </div>
-
-                            {/* Action Buttons for custom plays */}
-                            {play.firebaseId && (
-                              <div className="absolute right-4 top-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => handleEditPlay(play)}
-                                  className="p-1.5 bg-slate-800 border border-slate-700 rounded-md text-slate-500 hover:text-indigo-400 transition-colors shadow-sm"
-                                  title="Edit Play"
-                                >
-                                  <Edit2 className="h-4 w-4" />
-                                </button>
-                                <button 
-                                  onClick={() => handleDeletePlay(play.firebaseId)}
-                                  className="p-1.5 bg-slate-800 border border-slate-700 rounded-md text-slate-500 hover:text-red-500 transition-colors shadow-sm"
-                                  title="Delete Play"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            )}
                           </li>
                         ))}
                       </ul>
@@ -1217,125 +961,73 @@ export default function App() {
           )}
         </main>
         
-        {/* Add/Edit Custom Play Modal */}
-        {showAddPlay && (
-          <div className="fixed inset-0 bg-black/60 flex items-start sm:items-center justify-center p-4 z-50 overflow-y-auto animate-in fade-in">
-            <div className="bg-slate-800 rounded-xl shadow-xl w-full max-w-lg my-8 overflow-hidden border border-slate-700 flex flex-col max-h-[90vh]">
-              <div className="flex justify-between items-center p-5 border-b border-slate-700 shrink-0">
-                <h3 className="font-bold text-lg text-white flex items-center">
-                  <Database className="h-5 w-5 mr-2 text-indigo-500" />
-                  {editingPlayId ? 'Edit Custom Play' : 'Log Custom Play'}
+        {/* --- MANUAL SYNC MODAL --- */}
+        {showManualSync && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 animate-in fade-in">
+            <div className="bg-slate-800 rounded-xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-700 flex flex-col max-h-[90vh]">
+              <div className="flex justify-between items-center p-6 border-b border-slate-700">
+                <h3 className="font-bold text-xl text-white flex items-center">
+                  <UploadCloud className="h-6 w-6 mr-3 text-indigo-400" />
+                  Manual BGG Data Import
                 </h3>
-                <button onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="text-slate-400 hover:text-slate-200 transition-colors">
-                  <X className="h-5 w-5" />
+                <button onClick={() => setShowManualSync(false)} className="text-slate-400 hover:text-slate-200 transition-colors">
+                  <X className="h-6 w-6" />
                 </button>
               </div>
               
-              <div className="p-5 overflow-y-auto flex-1">
-                <form id="add-play-form" onSubmit={handleSavePlay} className="space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="sm:col-span-2">
-                      <label className="block text-sm font-medium text-slate-300 mb-1">Game <span className="text-red-500">*</span></label>
-                      <select 
-                        required 
-                        value={newPlayForm.gameId} 
-                        onChange={(e) => {
-                          const gId = e.target.value;
-                          const gName = collection.find(g => g.id === gId)?.name || '';
-                          setNewPlayForm({...newPlayForm, gameId: gId, gameName: gName})
-                        }}
-                        className="w-full p-2.5 border border-slate-600 rounded-lg bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                      >
-                        <option value="">Select a game from collection...</option>
-                        {collection.sort((a,b)=>a.name.localeCompare(b.name)).map(g => (
-                          <option key={g.id} value={g.id}>{g.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    
-                    <div className="sm:col-span-2">
-                      <label className="block text-sm font-medium text-slate-300 mb-1">Date Played</label>
-                      <input 
-                        type="date" 
-                        required 
-                        value={newPlayForm.date} 
-                        onChange={e => setNewPlayForm({...newPlayForm, date: e.target.value})} 
-                        className="w-full p-2.5 border border-slate-600 rounded-lg bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 outline-none" 
-                      />
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-700">
-                    <div className="flex justify-between items-center mb-3">
-                      <label className="block text-sm font-medium text-slate-300">Players</label>
-                      <button 
-                        type="button" 
-                        onClick={handleAddPlayer} 
-                        className="text-xs bg-indigo-900/30 text-indigo-400 px-2 py-1 rounded font-medium flex items-center hover:bg-indigo-900/50 transition-colors"
-                      >
-                        <Plus className="h-3 w-3 mr-1" /> Add Player
-                      </button>
-                    </div>
-                    
-                    <div className="space-y-2">
-                      {newPlayForm.players.map((p, idx) => (
-                        <div key={idx} className="flex gap-2 items-center bg-slate-900/50 p-2.5 rounded-lg border border-slate-700">
-                          <input 
-                            required
-                            type="text" 
-                            list="player-suggestions"
-                            placeholder="Name" 
-                            value={p.name} 
-                            onChange={(e) => handlePlayerChange(idx, 'name', e.target.value)} 
-                            className="flex-1 min-w-0 p-1.5 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
-                          />
-                          <input 
-                            type="number" 
-                            placeholder="Score" 
-                            value={p.score} 
-                            onChange={(e) => handlePlayerChange(idx, 'score', e.target.value)} 
-                            className="w-16 sm:w-20 p-1.5 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
-                          />
-                          <label className="flex items-center justify-center cursor-pointer p-1.5 bg-slate-800 border border-slate-600 rounded hover:bg-slate-700 transition-colors" title="Winner">
-                            <input 
-                              type="checkbox" 
-                              checked={p.win} 
-                              onChange={(e) => handlePlayerChange(idx, 'win', e.target.checked)} 
-                              className="sr-only" 
-                            />
-                            <Trophy className={`h-4 w-4 ${p.win ? 'text-amber-500' : 'text-slate-600'}`} />
-                          </label>
-                          {newPlayForm.players.length > 1 && (
-                            <button 
-                              type="button" 
-                              onClick={() => handleRemovePlayer(idx)}
-                              className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"
-                              title="Remove Player"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Suggestions Datalist */}
-                  <datalist id="player-suggestions">
-                    {playerSuggestions.map(name => (
-                      <option key={name} value={name} />
-                    ))}
-                  </datalist>
-                </form>
-              </div>
-              
-              <div className="p-5 border-t border-slate-700 bg-slate-800/50 shrink-0">
-                <div className="flex gap-3">
-                  <button type="button" onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="flex-1 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-slate-200 p-2.5 rounded-lg font-medium transition-colors">Cancel</button>
-                  <button type="submit" form="add-play-form" className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 rounded-lg font-medium transition-colors shadow-sm">
-                    {editingPlayId ? 'Update Play' : 'Save Play'}
-                  </button>
+              <div className="p-6 overflow-y-auto space-y-6">
+                <div className="bg-indigo-900/30 border border-indigo-500/30 p-4 rounded-lg">
+                  <p className="text-sm text-indigo-200 mb-2">
+                    If BoardGameGeek is blocking the Auto-Sync, you can securely download your data directly from BGG and drop it here.
+                  </p>
                 </div>
+
+                <div className="space-y-4">
+                  <div className="border border-slate-600 bg-slate-700/30 rounded-lg p-5">
+                    <div className="flex items-center mb-3">
+                      <div className="bg-slate-700 text-white font-bold h-6 w-6 rounded-full flex items-center justify-center text-xs mr-3 shrink-0">1</div>
+                      <h4 className="font-bold text-white">Import Collection XML</h4>
+                    </div>
+                    <p className="text-sm text-slate-400 mb-4 pl-9">
+                      Click the link below to view your raw BGG collection data. Press <strong>Ctrl+S</strong> (or Cmd+S) to save the page as an XML file, then select it here.
+                    </p>
+                    <div className="pl-9 mb-4">
+                      <a href={`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 text-sm font-medium flex items-center underline">
+                        <Download className="h-4 w-4 mr-1" /> Open Collection Data in New Tab
+                      </a>
+                    </div>
+                    <div className="pl-9">
+                      <label className="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-md p-3 text-center cursor-pointer transition-colors shadow-sm">
+                        <span className="text-sm font-medium text-slate-300">Select Collection XML File</span>
+                        <input type="file" accept=".xml" onChange={handleCollectionUpload} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="border border-slate-600 bg-slate-700/30 rounded-lg p-5">
+                    <div className="flex items-center mb-3">
+                      <div className="bg-slate-700 text-white font-bold h-6 w-6 rounded-full flex items-center justify-center text-xs mr-3 shrink-0">2</div>
+                      <h4 className="font-bold text-white">Import Plays XML</h4>
+                    </div>
+                    <p className="text-sm text-slate-400 mb-4 pl-9">
+                      Click the link below, save the page as an XML file, and select it here to load your play history.
+                    </p>
+                    <div className="pl-9 mb-4">
+                      <a href={`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 text-sm font-medium flex items-center underline">
+                        <Download className="h-4 w-4 mr-1" /> Open Plays Data in New Tab
+                      </a>
+                    </div>
+                    <div className="pl-9">
+                      <label className="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-md p-3 text-center cursor-pointer transition-colors shadow-sm">
+                        <span className="text-sm font-medium text-slate-300">Select Plays XML File</span>
+                        <input type="file" accept=".xml" onChange={handlePlaysUpload} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="p-6 border-t border-slate-700 bg-slate-800/50">
+                 <button onClick={() => setShowManualSync(false)} className="w-full bg-slate-700 hover:bg-slate-600 text-white p-3 rounded-lg font-bold transition-colors shadow-sm">Close</button>
               </div>
             </div>
           </div>
@@ -1357,7 +1049,8 @@ export default function App() {
               
               <div className="p-5 overflow-y-auto">
                 <p className="text-sm text-slate-400 mb-6">
-                  Link multiple names (like "Inboundbreeze" on BGG and "Richard" on custom plays) to combine their stats.
+                  Link multiple names (like "Inboundbreeze" on BGG and "Richard" on custom plays) to combine their stats. 
+                  {isFirebaseValid ? " These are synced securely to your cloud database." : " These are currently saved only to this browser."}
                 </p>
 
                 <form onSubmit={handleSaveAlias} className="flex gap-2 items-end mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-700">
