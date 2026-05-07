@@ -106,8 +106,10 @@ export default function App() {
     const fetchBGG = async (targetUrl, apiType) => {
       try {
         const apiRes = await fetch(`/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`);
-        if (apiRes.ok) {
-          return { text: await apiRes.text(), status: apiRes.status };
+        const text = await apiRes.text();
+        // Check if Vite intercepted this locally and returned HTML instead of XML
+        if (apiRes.ok && !text.trim().toLowerCase().startsWith("<!doctype html>") && !text.trim().toLowerCase().startsWith("<html")) {
+          return { text: text, status: apiRes.status };
         }
       } catch (e) {
         // Ignore errors from missing /api/bgg endpoint when running locally or in Canvas
