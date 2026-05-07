@@ -84,10 +84,10 @@ export default function App() {
 
       let responseText = null;
       let statusCode = null;
-      let fetchError = null;
+      let isRateLimited = false;
 
       const strategies = [
-        // Using the /raw endpoint fixes the JSON.parse error you encountered
+        async () => { const res = await fetch(targetUrl); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
@@ -96,6 +96,12 @@ export default function App() {
       for (const strategy of strategies) {
         try {
           const result = await strategy();
+          
+          if (result.status === 429) {
+            isRateLimited = true;
+            continue;
+          }
+
           if (result.text && !result.text.trim().toLowerCase().startsWith("<!doctype") && !result.text.trim().toLowerCase().startsWith("<html")) {
             if (result.status === 200 || result.status === 202) {
               responseText = result.text;
@@ -103,10 +109,13 @@ export default function App() {
               break;
             }
           }
-        } catch (err) { fetchError = err; }
+        } catch (err) { /* ignore and try next proxy */ }
       }
 
-      if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message || "All proxies failed"}`);
+      if (!responseText) {
+        if (isRateLimited) throw new Error("BGG Rate Limit Reached (Too Many Requests). Please wait 30 seconds and click Sync again.");
+        throw new Error("BGG Sync failed. The API may be temporarily down or blocked.");
+      }
       return { text: responseText, status: statusCode };
     };
 
@@ -147,6 +156,9 @@ export default function App() {
       });
 
       setCollection(parsedGames);
+
+      // DELAY added to prevent BGG 429 Rate Limiting
+      await new Promise(resolve => setTimeout(resolve, 1500));
 
       try {
         const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
