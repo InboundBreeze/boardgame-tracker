@@ -64,12 +64,15 @@ const db = getFirestore(app);
 const fetchBGG = async (targetUrl, retries = 2) => {
   // Add a delay to respect BGG rate limits
   await new Promise(r => setTimeout(r, 2000));
+  
+  // BGG's backend domain often has lower Cloudflare security than the main domain
+  const geekdoUrl = targetUrl.replace('boardgamegeek.com', 'api.geekdo.com');
 
   const endpoints = [
-    { name: "Direct", url: targetUrl, isJson: false },
-    { name: "AllOrigins-JSON", url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, isJson: true },
-    { name: "CORSProxy.io", url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, isJson: false },
-    { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, isJson: false }
+    { name: "Direct (Geekdo API)", url: geekdoUrl, isJson: false },
+    { name: "Direct (BGG)", url: targetUrl, isJson: false },
+    { name: "AllOrigins-JSON", url: `https://api.allorigins.win/get?url=${encodeURIComponent(geekdoUrl)}`, isJson: true },
+    { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(geekdoUrl)}`, isJson: false }
   ];
 
   const debugLogs = [];
@@ -80,8 +83,7 @@ const fetchBGG = async (targetUrl, retries = 2) => {
     try {
       const res = await fetch(endpoint.url, {
         headers: {
-          // BGG is less likely to block honest scripts than scripts spoofing Chrome from a datacenter IP
-          'User-Agent': 'BoardgameTrackerSyncScript/1.0 (Automated GitHub Action)',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': endpoint.isJson ? 'application/json' : 'application/xml, text/xml, */*'
         }
       });
@@ -98,13 +100,20 @@ const fetchBGG = async (targetUrl, retries = 2) => {
          continue;
       }
 
+      const rawText = await res.text();
       let text = "";
+
       if (endpoint.isJson) {
-         // Parse the JSON wrapper to extract the raw XML string
-         const data = await res.json();
-         text = data.contents || "";
+         try {
+             // Try to parse the JSON wrapper. If CF blocked it and returned HTML, this will fail safely.
+             const data = JSON.parse(rawText);
+             text = data.contents || "";
+         } catch(e) {
+             debugLogs.push(`${endpoint.name} (Invalid JSON received - Likely Cloudflare HTML)`);
+             continue; // Move safely to the next proxy
+         }
       } else {
-         text = await res.text();
+         text = rawText;
       }
 
       // Ensure we actually got XML back and not a Cloudflare "Verify you are human" HTML page
