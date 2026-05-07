@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, Database, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, Moon, Sun, Plus, X, Trash2, Settings, ArrowRight, Edit2, FileUp, RefreshCw } from 'lucide-react';
+import { Search, Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, Database, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, Plus, X, Trash2, Settings, ArrowRight, Edit2, FileUp, RefreshCw } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection as firestoreCollection, onSnapshot, addDoc, doc, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
@@ -15,16 +15,10 @@ let firebaseConfig = {
   appId: "1:878855163365:web:1723f1e5ec50ae4bf1b30c"
 };
 
-// Attempt to inject Canvas environment keys if they exist
 if (firebaseConfigStr) {
-  try {
-    firebaseConfig = JSON.parse(firebaseConfigStr);
-  } catch (e) {
-    console.warn("Could not parse injected firebase config");
-  }
+  try { firebaseConfig = JSON.parse(firebaseConfigStr); } catch (e) { console.warn("Could not parse injected firebase config"); }
 }
 
-// Only initialize Firebase if a real API key is present. This prevents app crashes!
 const isFirebaseValid = firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && firebaseConfig.apiKey !== "";
 const app = isFirebaseValid ? initializeApp(firebaseConfig) : null;
 const auth = isFirebaseValid ? getAuth(app) : null;
@@ -33,7 +27,9 @@ const db = isFirebaseValid ? getFirestore(app) : null;
 const appId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
 
 export default function App() {
-  const [username, setUsername] = useState('Inboundbreeze');
+  // Hardcoded Username for Production
+  const [username] = useState('Inboundbreeze'); 
+  
   const [collection, setCollection] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -44,17 +40,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('collection'); 
   const [playsData, setPlaysData] = useState([]); 
   const [selectedPlayerName, setSelectedPlayerName] = useState(''); 
-  const [darkMode, setDarkMode] = useState(true); 
   const [user, setUser] = useState(null); 
   const [customPlays, setCustomPlays] = useState([]); 
   const [showAddPlay, setShowAddPlay] = useState(false); 
   const [editingPlayId, setEditingPlayId] = useState(null);
   const fileInputRef = useRef(null);
-  
-  // Set to false for Live BGG Data
-  const [useMockData, setUseMockData] = useState(false);
 
-  // Player Aliases State
   const [aliases, setAliases] = useState({}); 
   const [showAliasModal, setShowAliasModal] = useState(false);
   const [aliasForm, setAliasForm] = useState({ from: '', to: '' });
@@ -69,28 +60,17 @@ export default function App() {
     gameId: '', 
     gameName: '', 
     date: new Date().toISOString().split('T')[0], 
-    players: [{ name: resolveName('Inboundbreeze'), score: '', win: false }] 
+    players: [{ name: resolveName(username), score: '', win: false }] 
   };
 
   const [newPlayForm, setNewPlayForm] = useState(initialPlayForm); 
 
   const fetchCollection = async (e) => {
     if (e) e.preventDefault();
-    
-    if (useMockData) {
-      setLoading(false);
-      setError(null);
-      setCollection(mockData);
-      setPlaysData(mockPlays);
-      return;
-    }
-
-    if (!username.trim()) return;
-
     setLoading(true);
     setError(null);
 
-    // Smart fetcher: Tries Vercel Serverless Function first, falls back to proxies for Canvas Preview
+    // Smart fetcher: Tries Vercel Serverless Function first, falls back to raw proxies
     const fetchBGG = async (targetUrl, apiType) => {
       try {
         const apiRes = await fetch(`/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`);
@@ -98,9 +78,8 @@ export default function App() {
         if (apiRes.ok && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
           return { text: text, status: apiRes.status };
         }
-        console.warn("Serverless API /api/bgg failed or returned HTML, falling back to proxies...");
       } catch (e) {
-        console.warn("Serverless API /api/bgg fetch threw an error:", e);
+        console.warn("Serverless API /api/bgg unavailable, falling back to proxies...");
       }
 
       let responseText = null;
@@ -108,15 +87,8 @@ export default function App() {
       let fetchError = null;
 
       const strategies = [
-        async () => { const res = await fetch(targetUrl); return { text: await res.text(), status: res.status }; },
-        async () => { 
-          const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); 
-          const rawText = await res.text();
-          if (!rawText) throw new Error("Empty response from AllOrigins proxy");
-          const data = JSON.parse(rawText); 
-          if (data.contents) return { text: data.contents, status: data.status?.http_code || 200 }; 
-          throw new Error("Invalid AllOrigins response"); 
-        },
+        // Using the /raw endpoint fixes the JSON.parse error you encountered
+        async () => { const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
       ];
@@ -134,8 +106,7 @@ export default function App() {
         } catch (err) { fetchError = err; }
       }
 
-      if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message || "All proxies failed or returned HTML"}`);
-      
+      if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message || "All proxies failed"}`);
       return { text: responseText, status: statusCode };
     };
 
@@ -177,7 +148,6 @@ export default function App() {
 
       setCollection(parsedGames);
 
-      // Fetch plays history
       try {
         const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
         const playsXml = parser.parseFromString(playsRes.text, "text/xml");
@@ -216,7 +186,6 @@ export default function App() {
     }
   };
 
-  // AUGMENT COLLECTION: Add Custom Cloud Plays to BGG Play Counts
   const augmentedCollection = useMemo(() => {
     return collection.map(game => {
       const extraPlays = customPlays.filter(p => p.gameId === game.id || p.game === game.name).length;
@@ -336,7 +305,6 @@ export default function App() {
     return playerStatsArray.map(p => p.name).sort((a, b) => a.localeCompare(b));
   }, [playerStatsArray]);
 
-  // Firebase Auth Effect (Only runs if Firebase keys were valid)
   useEffect(() => {
     if (!auth) return; 
     const initAuth = async () => {
@@ -355,7 +323,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Firebase Data Effect
   useEffect(() => {
     if (!user || !db) return;
     
@@ -369,7 +336,7 @@ export default function App() {
     const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
       if (docSnap.exists()) {
         setAliases(docSnap.data());
-      } else if (!useMockData) {
+      } else {
         setAliases({}); 
       }
     });
@@ -378,9 +345,14 @@ export default function App() {
       unsubscribePlays();
       unsubscribeAliases();
     };
-  }, [user, useMockData]);
+  }, [user]);
 
-  // Handle Adding Custom Play
+  // Load collection automatically on mount
+  useEffect(() => {
+    fetchCollection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleAddPlayer = () => {
     setNewPlayForm(prev => ({ ...prev, players: [...prev.players, { name: '', score: '', win: false }] }));
   };
@@ -559,7 +531,7 @@ export default function App() {
       const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
       await setDoc(aliasRef, newAliases);
       setAliasForm({ from: '', to: '' });
-      if (useMockData) setAliases(newAliases);
+      setAliases(newAliases);
     } catch (error) {
       console.error("Error saving alias:", error);
     }
@@ -573,72 +545,34 @@ export default function App() {
     try {
       const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
       await setDoc(aliasRef, newAliases);
-      if (useMockData) setAliases(newAliases);
+      setAliases(newAliases);
     } catch (error) {
       console.error("Error removing alias:", error);
     }
   };
 
-  // Load collection automatically on mount
-  useEffect(() => {
-    fetchCollection();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
-    <div className={darkMode ? 'dark' : ''}>
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans transition-colors duration-200 pb-12">
-        <header className="bg-indigo-600 dark:bg-slate-800 text-white shadow-md transition-colors duration-200">
+    <div className="dark">
+      <div className="min-h-screen bg-slate-900 text-slate-100 font-sans transition-colors duration-200 pb-12">
+        <header className="bg-slate-800 text-white shadow-md border-b border-slate-700">
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center space-x-3">
-              <Library className="h-8 w-8" />
+              <Library className="h-8 w-8 text-indigo-400" />
               <div>
                 <h1 className="text-2xl font-bold tracking-tight">Boardgame Tracker</h1>
-                <p className="text-indigo-200 dark:text-slate-400 text-sm">Dashboard for {resolveName(username)}</p>
+                <p className="text-slate-400 text-sm">Dashboard for {resolveName(username)}</p>
               </div>
             </div>
             
             <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
-              
-              {/* Dark Mode Toggle */}
               <button
-                onClick={() => setDarkMode(!darkMode)}
-                className="p-2 rounded-md bg-indigo-500 hover:bg-indigo-400 dark:bg-slate-700 dark:hover:bg-slate-600 transition-colors text-white flex items-center justify-center"
-                title="Toggle Dark Mode"
+                onClick={fetchCollection}
+                disabled={loading}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-6 rounded-lg transition-colors flex items-center justify-center shadow-sm disabled:bg-slate-600 disabled:cursor-not-allowed w-full sm:w-auto"
               >
-                {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                {loading ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <RefreshCw className="h-5 w-5 mr-2" />}
+                <span className="font-medium text-sm">Sync with BGG</span>
               </button>
-
-              <button
-                onClick={() => {
-                  setUseMockData(!useMockData);
-                  if (!useMockData) {
-                    setTimeout(() => fetchCollection(), 0);
-                  }
-                }}
-                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${useMockData ? 'bg-amber-500 text-amber-950 hover:bg-amber-400' : 'bg-indigo-800 dark:bg-indigo-600 text-indigo-200 dark:text-white hover:bg-indigo-700 dark:hover:bg-indigo-500'}`}
-              >
-                <Database className="h-4 w-4 mr-2" />
-                {useMockData ? 'Using Mock Data' : 'Live Data Mode'}
-              </button>
-
-              <div className="relative flex items-center w-full sm:w-auto">
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="BGG Username..."
-                    disabled={useMockData}
-                    className="w-full sm:w-48 pl-4 pr-4 py-2 rounded-l-md border-0 text-slate-900 dark:text-white dark:bg-slate-700 shadow-inner focus:ring-2 focus:ring-indigo-300 dark:focus:ring-indigo-500 outline-none disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-500"
-                  />
-                  <button
-                    onClick={fetchCollection}
-                    disabled={loading || useMockData}
-                    className="bg-indigo-800 dark:bg-slate-600 hover:bg-indigo-900 dark:hover:bg-slate-500 text-white p-2 rounded-r-md transition-colors flex items-center justify-center h-full px-4 disabled:bg-slate-400 dark:disabled:bg-slate-600 disabled:cursor-not-allowed"
-                  >
-                    {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <RefreshCw className="h-5 w-5" />}
-                  </button>
-              </div>
             </div>
           </div>
         </header>
@@ -646,36 +580,29 @@ export default function App() {
         <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
           
           {/* Missing API Key Warning for Production */}
-          {!isFirebaseValid && !useMockData && (
-             <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
-               <AlertCircle className="h-5 w-5 mr-3 text-amber-600 dark:text-amber-400 shrink-0" />
+          {!isFirebaseValid && (
+             <div className="bg-amber-900/30 border border-amber-800 text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
+               <AlertCircle className="h-5 w-5 mr-3 text-amber-400 shrink-0" />
                <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx yet. You can still view your BGG data, but Custom Plays and Aliases cannot be saved.</p>
             </div>
           )}
 
-          {useMockData && (
-            <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
-               <AlertCircle className="h-5 w-5 mr-3 text-amber-600 dark:text-amber-400" />
-               <p className="text-sm">You are currently viewing <strong>Mock Data</strong> to preview the layout. BGG network fetching is bypassed.</p>
-            </div>
-          )}
-
-          {error && !useMockData && (
-            <div className="bg-red-50 dark:bg-red-900/30 border-l-4 border-red-500 p-4 mb-8 rounded-r-md shadow-sm flex items-start">
+          {error && (
+            <div className="bg-red-900/30 border-l-4 border-red-500 p-4 mb-8 rounded-r-md shadow-sm flex items-start">
               <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 mr-3 flex-shrink-0" />
               <div className="flex-1">
-                <h3 className="text-red-800 dark:text-red-300 font-medium">Error loading collection</h3>
-                <p className="text-red-700 dark:text-red-400 text-sm mt-1 font-mono break-words">{error}</p>
+                <h3 className="text-red-300 font-medium">Error loading collection</h3>
+                <p className="text-red-400 text-sm mt-1 font-mono break-words">{error}</p>
               </div>
             </div>
           )}
 
-          {!loading && collection.length === 0 && !error && !useMockData && (
-            <div className="text-center py-20 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
-              <Library className="h-16 w-16 text-slate-300 dark:text-slate-600 mx-auto mb-4" />
-              <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-200">No Collection Loaded</h2>
-              <p className="text-slate-500 dark:text-slate-400 mt-2 max-w-md mx-auto">
-                No games were found in this collection. Try searching a different username.
+          {!loading && collection.length === 0 && !error && (
+            <div className="text-center py-20 bg-slate-800 rounded-xl shadow-sm border border-slate-700">
+              <Library className="h-16 w-16 text-slate-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-slate-200">No Collection Loaded</h2>
+              <p className="text-slate-400 mt-2 max-w-md mx-auto">
+                Sync with BoardGameGeek using the button above to load your library.
               </p>
             </div>
           )}
@@ -684,14 +611,14 @@ export default function App() {
             <div className="space-y-6">
               
               {/* Tab Navigation */}
-              <div className="border-b border-slate-200 dark:border-slate-700">
+              <div className="border-b border-slate-700">
                 <nav className="-mb-px flex space-x-8 overflow-x-auto">
                   <button
                     onClick={() => setActiveTab('collection')}
                     className={`${
                       activeTab === 'collection'
-                        ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                        : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
+                        ? 'border-indigo-400 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600'
                     } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center transition-colors`}
                   >
                     <Grid className="h-4 w-4 mr-2" />
@@ -701,8 +628,8 @@ export default function App() {
                     onClick={() => setActiveTab('dashboard')}
                     className={`${
                       activeTab === 'dashboard'
-                        ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                        : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
+                        ? 'border-indigo-400 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600'
                     } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center transition-colors`}
                   >
                     <LayoutDashboard className="h-4 w-4 mr-2" />
@@ -712,8 +639,8 @@ export default function App() {
                     onClick={() => setActiveTab('plays')}
                     className={`${
                       activeTab === 'plays'
-                        ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                        : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
+                        ? 'border-indigo-400 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600'
                     } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center transition-colors`}
                   >
                     <History className="h-4 w-4 mr-2" />
@@ -723,8 +650,8 @@ export default function App() {
                     onClick={() => setActiveTab('players')}
                     className={`${
                       activeTab === 'players'
-                        ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                        : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600'
+                        ? 'border-indigo-400 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600'
                     } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center transition-colors`}
                   >
                     <Users className="h-4 w-4 mr-2" />
@@ -736,19 +663,19 @@ export default function App() {
               {/* Collection Tab Content */}
               {activeTab === 'collection' && (
                 <>
-                  <div className="flex flex-col bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 gap-4">
+                  <div className="flex flex-col bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-700 gap-4">
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                      <div className="text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
-                        Showing <span className="text-indigo-600 dark:text-indigo-400">{sortedCollection.length}</span> of {augmentedCollection.length} games
+                      <div className="text-slate-300 font-medium whitespace-nowrap">
+                        Showing <span className="text-indigo-400">{sortedCollection.length}</span> of {augmentedCollection.length} games
                       </div>
                       
                       <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-                        <div className="flex items-center space-x-2 bg-slate-50 dark:bg-slate-900 rounded-md border border-slate-300 dark:border-slate-600 p-1 flex-1 md:flex-none">
+                        <div className="flex items-center space-x-2 bg-slate-900 rounded-md border border-slate-600 p-1 flex-1 md:flex-none">
                           <Users className="h-4 w-4 text-slate-400 ml-2" />
                           <select
                             value={filterPlayers}
                             onChange={(e) => setFilterPlayers(e.target.value)}
-                            className="bg-transparent text-slate-700 dark:text-slate-200 text-sm focus:ring-0 border-0 p-1 outline-none cursor-pointer w-full"
+                            className="bg-transparent text-slate-200 text-sm focus:ring-0 border-0 p-1 outline-none cursor-pointer w-full"
                           >
                             <option value="any">Any Players</option>
                             <option value="1">1 Player</option>
@@ -759,21 +686,21 @@ export default function App() {
                           </select>
                         </div>
 
-                        <div className="flex items-center space-x-2 bg-slate-50 dark:bg-slate-900 rounded-md border border-slate-300 dark:border-slate-600 p-1 flex-1 md:flex-none">
+                        <div className="flex items-center space-x-2 bg-slate-900 rounded-md border border-slate-600 p-1 flex-1 md:flex-none">
                           <Star className="h-4 w-4 text-slate-400 ml-2" />
                           <select
                             value={filterRatingType}
                             onChange={(e) => setFilterRatingType(e.target.value)}
-                            className="bg-transparent text-slate-700 dark:text-slate-200 text-sm focus:ring-0 border-0 p-1 pr-0 outline-none cursor-pointer font-medium"
+                            className="bg-transparent text-slate-200 text-sm focus:ring-0 border-0 p-1 pr-0 outline-none cursor-pointer font-medium"
                           >
                             <option value="avgRating">BGG Avg</option>
                             <option value="myRating">My Rating</option>
                           </select>
-                          <span className="text-slate-300 dark:text-slate-600">|</span>
+                          <span className="text-slate-600">|</span>
                           <select
                             value={filterMinRating}
                             onChange={(e) => setFilterMinRating(e.target.value)}
-                            className="bg-transparent text-slate-700 dark:text-slate-200 text-sm focus:ring-0 border-0 p-1 outline-none cursor-pointer"
+                            className="bg-transparent text-slate-200 text-sm focus:ring-0 border-0 p-1 outline-none cursor-pointer"
                           >
                             <option value="0">Any Score</option>
                             <option value="7">7.0+</option>
@@ -787,7 +714,7 @@ export default function App() {
                           <select
                             value={sortBy}
                             onChange={(e) => setSortBy(e.target.value)}
-                            className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm rounded-md focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none w-full sm:w-auto"
+                            className="bg-slate-900 border border-slate-600 text-slate-200 text-sm rounded-md focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none w-full sm:w-auto"
                           >
                             <option value="name">Name (A-Z)</option>
                             <option value="plays">Most Played</option>
@@ -801,9 +728,9 @@ export default function App() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 mt-6">
                     {sortedCollection.map((game) => (
-                      <div key={game.id} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden hover:shadow-md transition-shadow group flex flex-col">
+                      <div key={game.id} className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden hover:shadow-md transition-shadow group flex flex-col">
                         
-                        <div className="h-48 bg-slate-100 dark:bg-slate-700/50 relative flex items-center justify-center p-4 overflow-hidden">
+                        <div className="h-48 bg-slate-700/50 relative flex items-center justify-center p-4 overflow-hidden">
                           {game.image ? (
                             <img 
                               src={game.image} 
@@ -812,45 +739,45 @@ export default function App() {
                               loading="lazy"
                             />
                           ) : (
-                            <span className="text-slate-400 dark:text-slate-500">No Image</span>
+                            <span className="text-slate-500">No Image</span>
                           )}
                           {game.plays > 0 && (
-                             <div className="absolute top-3 right-3 bg-indigo-600 dark:bg-indigo-500 text-white text-xs font-bold px-2 py-1 rounded-full flex items-center shadow-sm">
+                             <div className="absolute top-3 right-3 bg-indigo-500 text-white text-xs font-bold px-2 py-1 rounded-full flex items-center shadow-sm">
                                <Play className="h-3 w-3 mr-1 fill-current" /> {game.plays}
                              </div>
                           )}
                         </div>
 
                         <div className="p-4 flex-grow flex flex-col">
-                          <h3 className="font-bold text-slate-900 dark:text-white line-clamp-1" title={game.name}>
+                          <h3 className="font-bold text-white line-clamp-1" title={game.name}>
                             {game.name}
                           </h3>
                           
                           <div className="flex items-center justify-between mt-1 mb-4">
-                            <p className="text-sm text-slate-500 dark:text-slate-400">{game.year}</p>
+                            <p className="text-sm text-slate-400">{game.year}</p>
                             {(game.minPlayers > 0) && (
-                              <p className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center bg-slate-50 dark:bg-slate-700/50 px-2 py-1 rounded border border-slate-100 dark:border-slate-700">
+                              <p className="text-xs font-medium text-slate-400 flex items-center bg-slate-700/50 px-2 py-1 rounded border border-slate-700">
                                 <Users className="h-3 w-3 mr-1" />
                                 {game.minPlayers === game.maxPlayers ? game.minPlayers : `${game.minPlayers}-${game.maxPlayers}`} Players
                               </p>
                             )}
                           </div>
                           
-                          <div className="mt-auto pt-4 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                          <div className="mt-auto pt-4 border-t border-slate-700 flex items-center justify-between">
                             <div className="flex flex-col">
-                              <span className="text-xs text-slate-500 dark:text-slate-400 uppercase font-semibold tracking-wider mb-1">My Rating</span>
+                              <span className="text-xs text-slate-400 uppercase font-semibold tracking-wider mb-1">My Rating</span>
                               <div className="flex items-center text-amber-500 font-bold">
                                 <Star className="h-4 w-4 mr-1 fill-current" />
-                                {game.myRating ? game.myRating.toFixed(1) : <span className="text-slate-400 dark:text-slate-500 font-normal italic text-sm">N/A</span>}
+                                {game.myRating ? game.myRating.toFixed(1) : <span className="text-slate-500 font-normal italic text-sm">N/A</span>}
                               </div>
                             </div>
 
                             <div className="flex flex-col items-end">
-                              <span className="text-xs text-slate-500 dark:text-slate-400 uppercase font-semibold tracking-wider mb-1 flex items-center">
+                              <span className="text-xs text-slate-400 uppercase font-semibold tracking-wider mb-1 flex items-center">
                                 <TrendingUp className="h-3 w-3 mr-1" /> BGG Avg
                               </span>
-                              <div className="flex items-center text-slate-700 dark:text-slate-300 font-medium">
-                                <Star className="h-4 w-4 mr-1 text-slate-300 dark:text-slate-600" />
+                              <div className="flex items-center text-slate-300 font-medium">
+                                <Star className="h-4 w-4 mr-1 text-slate-600" />
                                 {game.avgRating ? game.avgRating.toFixed(1) : '-'}
                               </div>
                             </div>
@@ -866,72 +793,72 @@ export default function App() {
               {activeTab === 'dashboard' && stats && (
                 <div className="space-y-6 animate-in fade-in duration-500">
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex items-center space-x-4">
-                      <div className="bg-indigo-100 dark:bg-indigo-900/50 p-3 rounded-lg text-indigo-600 dark:text-indigo-400"><Library className="h-6 w-6" /></div>
+                    <div className="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex items-center space-x-4">
+                      <div className="bg-indigo-900/50 p-3 rounded-lg text-indigo-400"><Library className="h-6 w-6" /></div>
                       <div>
-                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Total Games</p>
-                        <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.totalGames}</p>
+                        <p className="text-sm font-medium text-slate-400">Total Games</p>
+                        <p className="text-2xl font-bold text-white">{stats.totalGames}</p>
                       </div>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex items-center space-x-4">
-                      <div className="bg-green-100 dark:bg-green-900/30 p-3 rounded-lg text-green-600 dark:text-green-400"><Play className="h-6 w-6 fill-current" /></div>
+                    <div className="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex items-center space-x-4">
+                      <div className="bg-green-900/30 p-3 rounded-lg text-green-400"><Play className="h-6 w-6 fill-current" /></div>
                       <div>
-                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Total Plays</p>
-                        <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.totalPlays}</p>
+                        <p className="text-sm font-medium text-slate-400">Total Plays</p>
+                        <p className="text-2xl font-bold text-white">{stats.totalPlays}</p>
                       </div>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex items-center space-x-4">
-                      <div className="bg-amber-100 dark:bg-amber-900/30 p-3 rounded-lg text-amber-600 dark:text-amber-500"><Star className="h-6 w-6 fill-current" /></div>
+                    <div className="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex items-center space-x-4">
+                      <div className="bg-amber-900/30 p-3 rounded-lg text-amber-500"><Star className="h-6 w-6 fill-current" /></div>
                       <div>
-                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Avg Personal Rating</p>
-                        <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.avgRating}</p>
+                        <p className="text-sm font-medium text-slate-400">Avg Personal Rating</p>
+                        <p className="text-2xl font-bold text-white">{stats.avgRating}</p>
                       </div>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex items-center space-x-4">
-                      <div className="bg-purple-100 dark:bg-purple-900/30 p-3 rounded-lg text-purple-600 dark:text-purple-400"><BarChart3 className="h-6 w-6" /></div>
+                    <div className="bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-700 flex items-center space-x-4">
+                      <div className="bg-purple-900/30 p-3 rounded-lg text-purple-400"><BarChart3 className="h-6 w-6" /></div>
                       <div>
-                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">H-Index</p>
-                        <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.hIndex}</p>
+                        <p className="text-sm font-medium text-slate-400">H-Index</p>
+                        <p className="text-2xl font-bold text-white">{stats.hIndex}</p>
                       </div>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                      <div className="bg-slate-50 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center">
-                        <Trophy className="h-5 w-5 text-indigo-500 dark:text-indigo-400 mr-2" />
-                        <h3 className="font-bold text-slate-800 dark:text-slate-200">Most Played Games</h3>
+                    <div className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                      <div className="bg-slate-800/80 px-6 py-4 border-b border-slate-700 flex items-center">
+                        <Trophy className="h-5 w-5 text-indigo-400 mr-2" />
+                        <h3 className="font-bold text-slate-200">Most Played Games</h3>
                       </div>
-                      <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+                      <ul className="divide-y divide-slate-700">
                         {stats.topPlayed.map((game, idx) => (
-                          <li key={`played-${game.id}`} className="px-6 py-4 flex items-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
-                            <span className="text-slate-400 dark:text-slate-500 font-bold w-6">{idx + 1}.</span>
-                            <div className="h-10 w-10 bg-slate-100 dark:bg-slate-700 rounded overflow-hidden flex-shrink-0 mr-4 border border-slate-200 dark:border-slate-600">
+                          <li key={`played-${game.id}`} className="px-6 py-4 flex items-center hover:bg-slate-700/50 transition-colors">
+                            <span className="text-slate-500 font-bold w-6">{idx + 1}.</span>
+                            <div className="h-10 w-10 bg-slate-700 rounded overflow-hidden flex-shrink-0 mr-4 border border-slate-600">
                               {game.image ? <img src={game.image} alt={game.name} className="h-full w-full object-cover" /> : null}
                             </div>
-                            <span className="font-medium text-slate-900 dark:text-white flex-1 truncate">{game.name}</span>
-                            <div className="flex items-center text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-700 px-3 py-1 rounded-full">
-                              <Play className="h-3 w-3 mr-1.5 fill-slate-400 dark:fill-slate-500 text-slate-400 dark:text-slate-500" /> {game.plays} plays
+                            <span className="font-medium text-white flex-1 truncate">{game.name}</span>
+                            <div className="flex items-center text-sm font-bold text-slate-300 bg-slate-700 px-3 py-1 rounded-full">
+                              <Play className="h-3 w-3 mr-1.5 fill-slate-500 text-slate-500" /> {game.plays} plays
                             </div>
                           </li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                      <div className="bg-slate-50 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center">
+                    <div className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                      <div className="bg-slate-800/80 px-6 py-4 border-b border-slate-700 flex items-center">
                         <Star className="h-5 w-5 text-amber-500 mr-2 fill-current" />
-                        <h3 className="font-bold text-slate-800 dark:text-slate-200">Highest Rated by You</h3>
+                        <h3 className="font-bold text-slate-200">Highest Rated by You</h3>
                       </div>
-                      <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+                      <ul className="divide-y divide-slate-700">
                         {stats.topRated.map((game, idx) => (
-                          <li key={`rated-${game.id}`} className="px-6 py-4 flex items-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
-                            <span className="text-slate-400 dark:text-slate-500 font-bold w-6">{idx + 1}.</span>
-                            <div className="h-10 w-10 bg-slate-100 dark:bg-slate-700 rounded overflow-hidden flex-shrink-0 mr-4 border border-slate-200 dark:border-slate-600">
+                          <li key={`rated-${game.id}`} className="px-6 py-4 flex items-center hover:bg-slate-700/50 transition-colors">
+                            <span className="text-slate-500 font-bold w-6">{idx + 1}.</span>
+                            <div className="h-10 w-10 bg-slate-700 rounded overflow-hidden flex-shrink-0 mr-4 border border-slate-600">
                               {game.image ? <img src={game.image} alt={game.name} className="h-full w-full object-cover" /> : null}
                             </div>
-                            <span className="font-medium text-slate-900 dark:text-white flex-1 truncate">{game.name}</span>
-                            <div className="flex items-center text-sm font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 px-3 py-1 rounded-full">
+                            <span className="font-medium text-white flex-1 truncate">{game.name}</span>
+                            <div className="flex items-center text-sm font-bold text-amber-400 bg-amber-900/30 px-3 py-1 rounded-full">
                               <Star className="h-3 w-3 mr-1.5 fill-current" /> {game.myRating.toFixed(1)}
                             </div>
                           </li>
@@ -945,14 +872,14 @@ export default function App() {
               {/* Recent Plays Tab Content */}
               {activeTab === 'plays' && (
                 <div className="space-y-6 animate-in fade-in duration-500">
-                  <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                    <div className="bg-slate-50 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                    <div className="bg-slate-800/80 px-6 py-4 border-b border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                       <div className="flex items-center">
-                        <History className="h-5 w-5 text-indigo-500 dark:text-indigo-400 mr-2" />
-                        <h3 className="font-bold text-slate-800 dark:text-slate-200">Play History</h3>
+                        <History className="h-5 w-5 text-indigo-400 mr-2" />
+                        <h3 className="font-bold text-slate-200">Play History</h3>
                       </div>
                       <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
-                        <span className="text-sm text-slate-500 dark:text-slate-400 font-medium hidden md:inline mr-2">Showing latest {combinedPlays.length} sessions</span>
+                        <span className="text-sm text-slate-400 font-medium hidden md:inline mr-2">Showing latest {combinedPlays.length} sessions</span>
                         <input 
                           type="file" 
                           ref={fileInputRef} 
@@ -962,7 +889,7 @@ export default function App() {
                         />
                         <button 
                           onClick={() => fileInputRef.current.click()}
-                          className="bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center shadow-sm"
+                          className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center shadow-sm"
                         >
                           <FileUp className="h-4 w-4 mr-1" /> Import CSV
                         </button>
@@ -980,8 +907,8 @@ export default function App() {
                     </div>
                     
                     {combinedPlays.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 dark:text-slate-400">
-                        <Calendar className="h-12 w-12 mx-auto mb-3 text-slate-300 dark:text-slate-600" />
+                      <div className="p-8 text-center text-slate-400">
+                        <Calendar className="h-12 w-12 mx-auto mb-3 text-slate-600" />
                         <p>No recent plays found.</p>
                         <p className="text-sm mt-1 mb-4">Log some plays on BoardGameGeek to see them appear here, or add your own!</p>
                         <button 
@@ -992,27 +919,27 @@ export default function App() {
                         </button>
                       </div>
                     ) : (
-                      <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+                      <ul className="divide-y divide-slate-700">
                         {combinedPlays.map((play) => (
-                          <li key={play.firebaseId || play.id} className="p-6 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-6 items-start sm:items-center relative group">
+                          <li key={play.firebaseId || play.id} className="p-6 hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-6 items-start sm:items-center relative group">
                             <div className="flex items-center gap-4 w-full sm:w-1/3">
-                              <div className="h-16 w-16 bg-slate-100 dark:bg-slate-700 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-slate-600 flex items-center justify-center">
+                              <div className="h-16 w-16 bg-slate-700 rounded-lg overflow-hidden flex-shrink-0 border border-slate-600 flex items-center justify-center">
                                 {play.image ? (
                                   <img src={play.image} alt={play.game} className="h-full w-full object-cover" />
                                 ) : (
-                                  <Grid className="h-6 w-6 text-slate-300 dark:text-slate-500" />
+                                  <Grid className="h-6 w-6 text-slate-500" />
                                 )}
                               </div>
                               <div>
-                                <h4 className="font-bold text-slate-900 dark:text-white leading-tight">{play.game}</h4>
-                                <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center mt-1">
+                                <h4 className="font-bold text-white leading-tight">{play.game}</h4>
+                                <p className="text-sm text-slate-400 flex items-center mt-1">
                                   <Calendar className="h-3 w-3 mr-1" /> {play.date}
                                 </p>
                               </div>
                             </div>
                             
-                            <div className="flex-1 w-full bg-slate-50 dark:bg-slate-700/30 sm:bg-transparent rounded-lg p-3 sm:p-0">
-                              <div className="flex items-center text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
+                            <div className="flex-1 w-full bg-slate-700/30 sm:bg-transparent rounded-lg p-3 sm:p-0">
+                              <div className="flex items-center text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                                 <Users className="h-3 w-3 mr-1" /> Players
                               </div>
                               <div className="flex flex-wrap gap-2">
@@ -1021,15 +948,15 @@ export default function App() {
                                   return (
                                     <div 
                                       key={idx} 
-                                      className={`flex items-center px-3 py-1.5 rounded-full text-sm font-medium border ${p.win ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-700/50 text-amber-800 dark:text-amber-200 shadow-sm' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300'}`}
+                                      className={`flex items-center px-3 py-1.5 rounded-full text-sm font-medium border ${p.win ? 'bg-amber-900/30 border-amber-800 text-amber-300 shadow-sm' : 'bg-slate-800 border-slate-600 text-slate-300'}`}
                                     >
                                       {p.win && <Trophy className="h-3 w-3 mr-1.5 text-amber-500" />}
                                       {resolvedPName}
-                                      {p.score && <span className="ml-2 pl-2 border-l border-slate-300 dark:border-slate-600 opacity-70">{p.score}</span>}
+                                      {p.score && <span className="ml-2 pl-2 border-l border-slate-600 opacity-70">{p.score}</span>}
                                     </div>
                                   );
                                 }) : (
-                                  <span className="text-sm text-slate-500 dark:text-slate-400 italic">No players recorded</span>
+                                  <span className="text-sm text-slate-400 italic">No players recorded</span>
                                 )}
                               </div>
                             </div>
@@ -1039,14 +966,14 @@ export default function App() {
                               <div className="absolute right-4 top-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button 
                                   onClick={() => handleEditPlay(play)}
-                                  className="p-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors shadow-sm"
+                                  className="p-1.5 bg-slate-800 border border-slate-700 rounded-md text-slate-500 hover:text-indigo-400 transition-colors shadow-sm"
                                   title="Edit Play"
                                 >
                                   <Edit2 className="h-4 w-4" />
                                 </button>
                                 <button 
                                   onClick={() => handleDeletePlay(play.firebaseId)}
-                                  className="p-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 hover:text-red-500 transition-colors shadow-sm"
+                                  className="p-1.5 bg-slate-800 border border-slate-700 rounded-md text-slate-500 hover:text-red-500 transition-colors shadow-sm"
                                   title="Delete Play"
                                 >
                                   <Trash2 className="h-4 w-4" />
@@ -1067,10 +994,10 @@ export default function App() {
                   
                   {/* Global Wins Leaderboard Component */}
                   {topWinners.length > 0 && (
-                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                      <div className="bg-slate-50 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center">
+                    <div className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                      <div className="bg-slate-800/80 px-6 py-4 border-b border-slate-700 flex items-center">
                         <Trophy className="h-5 w-5 text-amber-500 mr-2" />
-                        <h3 className="font-bold text-slate-800 dark:text-slate-200">Global Wins Leaderboard</h3>
+                        <h3 className="font-bold text-slate-200">Global Wins Leaderboard</h3>
                       </div>
                       <div className="p-6">
                         <div className="space-y-4">
@@ -1080,16 +1007,16 @@ export default function App() {
                             const isFirst = idx === 0;
                             return (
                               <div key={player.name} className="flex items-center text-sm">
-                                <div className="w-24 font-bold text-slate-700 dark:text-slate-300 flex items-center justify-end pr-4 truncate">
+                                <div className="w-24 font-bold text-slate-300 flex items-center justify-end pr-4 truncate">
                                   {isFirst && <Award className="h-4 w-4 mr-1 text-amber-500" />}
                                   {player.name}
                                 </div>
-                                <div className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-r-md h-8 flex items-center relative group">
+                                <div className="flex-1 bg-slate-700 rounded-r-md h-8 flex items-center relative group">
                                   <div 
-                                    className={`h-full rounded-r-md transition-all duration-1000 ${isFirst ? 'bg-amber-400 dark:bg-amber-500' : 'bg-indigo-400 dark:bg-indigo-500'}`} 
+                                    className={`h-full rounded-r-md transition-all duration-1000 ${isFirst ? 'bg-amber-500' : 'bg-indigo-500'}`} 
                                     style={{ width: `${percentage}%` }}
                                   ></div>
-                                  <span className="absolute left-3 text-xs font-bold text-slate-800 dark:text-slate-100 drop-shadow-sm">
+                                  <span className="absolute left-3 text-xs font-bold text-slate-100 drop-shadow-sm">
                                     {player.wins} {player.wins === 1 ? 'Win' : 'Wins'}
                                   </span>
                                 </div>
@@ -1102,11 +1029,11 @@ export default function App() {
                   )}
 
                   {/* Individual Player Breakdown */}
-                  <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                    <div className="bg-slate-50 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="bg-slate-800 rounded-xl shadow-sm border border-slate-700 overflow-hidden">
+                    <div className="bg-slate-800/80 px-6 py-4 border-b border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                       <div className="flex items-center">
-                        <UserCircle className="h-5 w-5 text-indigo-500 dark:text-indigo-400 mr-2" />
-                        <h3 className="font-bold text-slate-800 dark:text-slate-200">Player Details</h3>
+                        <UserCircle className="h-5 w-5 text-indigo-400 mr-2" />
+                        <h3 className="font-bold text-slate-200">Player Details</h3>
                       </div>
                       
                       <div className="flex items-center space-x-4 w-full sm:w-auto">
@@ -1116,7 +1043,7 @@ export default function App() {
                             <select
                               value={selectedPlayerName || (playerStatsArray[0]?.name || '')}
                               onChange={(e) => setSelectedPlayerName(e.target.value)}
-                              className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm rounded-md focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none w-full sm:w-48 shadow-sm"
+                              className="bg-slate-900 border border-slate-600 text-slate-200 text-sm rounded-md focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none w-full sm:w-48 shadow-sm"
                             >
                               {playerStatsArray.map(p => (
                                 <option key={p.name} value={p.name}>{p.name} ({p.plays} plays)</option>
@@ -1126,7 +1053,7 @@ export default function App() {
                         )}
                         <button 
                           onClick={() => setShowAliasModal(true)}
-                          className="bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 px-3 py-2 rounded text-sm font-medium transition-colors flex items-center shadow-sm whitespace-nowrap"
+                          className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded text-sm font-medium transition-colors flex items-center shadow-sm whitespace-nowrap"
                         >
                           <Settings className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Manage Aliases</span>
                         </button>
@@ -1134,8 +1061,8 @@ export default function App() {
                     </div>
 
                     {playerStatsArray.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 dark:text-slate-400">
-                        <Award className="h-12 w-12 mx-auto mb-3 text-slate-300 dark:text-slate-600" />
+                      <div className="p-8 text-center text-slate-400">
+                        <Award className="h-12 w-12 mx-auto mb-3 text-slate-600" />
                         <p>No player data available.</p>
                         <p className="text-sm mt-1">Play history is required to generate player stats.</p>
                       </div>
@@ -1151,33 +1078,33 @@ export default function App() {
                           return (
                             <div className="flex flex-col md:flex-row gap-8">
                               <div className="md:w-1/3 space-y-4">
-                                <div className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-5 border border-indigo-100 dark:border-indigo-800/50">
-                                  <h4 className="text-indigo-900 dark:text-indigo-300 font-bold text-lg mb-1">{player.name}</h4>
-                                  <p className="text-indigo-700 dark:text-indigo-400 text-sm mb-4">Overall Performance</p>
+                                <div className="bg-indigo-900/20 rounded-lg p-5 border border-indigo-800/50">
+                                  <h4 className="text-indigo-300 font-bold text-lg mb-1">{player.name}</h4>
+                                  <p className="text-indigo-400 text-sm mb-4">Overall Performance</p>
                                   
                                   <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-white dark:bg-slate-800 p-3 rounded shadow-sm border border-indigo-50 dark:border-indigo-900/50">
-                                      <p className="text-xs text-slate-500 dark:text-slate-400 uppercase font-bold">Total Plays</p>
-                                      <p className="text-2xl font-black text-slate-800 dark:text-white">{player.plays}</p>
+                                    <div className="bg-slate-800 p-3 rounded shadow-sm border border-indigo-900/50">
+                                      <p className="text-xs text-slate-400 uppercase font-bold">Total Plays</p>
+                                      <p className="text-2xl font-black text-white">{player.plays}</p>
                                     </div>
-                                    <div className="bg-white dark:bg-slate-800 p-3 rounded shadow-sm border border-indigo-50 dark:border-indigo-900/50">
-                                      <p className="text-xs text-slate-500 dark:text-slate-400 uppercase font-bold">Wins (1st)</p>
+                                    <div className="bg-slate-800 p-3 rounded shadow-sm border border-indigo-900/50">
+                                      <p className="text-xs text-slate-400 uppercase font-bold">Wins (1st)</p>
                                       <p className="text-2xl font-black text-amber-500">{player.wins}</p>
                                     </div>
-                                    <div className="col-span-2 bg-white dark:bg-slate-800 p-3 rounded shadow-sm border border-indigo-50 dark:border-indigo-900/50">
-                                      <p className="text-xs text-slate-500 dark:text-slate-400 uppercase font-bold mb-1">Win Rate</p>
-                                      <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-2.5 mb-1 relative overflow-hidden">
+                                    <div className="col-span-2 bg-slate-800 p-3 rounded shadow-sm border border-indigo-900/50">
+                                      <p className="text-xs text-slate-400 uppercase font-bold mb-1">Win Rate</p>
+                                      <div className="w-full bg-slate-700 rounded-full h-2.5 mb-1 relative overflow-hidden">
                                         <div className="bg-amber-500 h-2.5 rounded-full" style={{ width: `${winRate}%` }}></div>
                                       </div>
-                                      <p className="text-sm font-bold text-slate-700 dark:text-slate-300">{winRate}%</p>
+                                      <p className="text-sm font-bold text-slate-300">{winRate}%</p>
                                     </div>
                                   </div>
                                 </div>
                               </div>
 
                               <div className="md:w-2/3">
-                                <h4 className="text-slate-800 dark:text-slate-200 font-bold text-lg mb-4 flex items-center">
-                                  <BarChart3 className="h-5 w-5 mr-2 text-slate-400 dark:text-slate-500" />
+                                <h4 className="text-slate-200 font-bold text-lg mb-4 flex items-center">
+                                  <BarChart3 className="h-5 w-5 mr-2 text-slate-500" />
                                   Placement Distribution
                                 </h4>
                                 <div className="space-y-3">
@@ -1186,16 +1113,16 @@ export default function App() {
                                     const isFirst = rank === "1";
                                     return (
                                       <div key={rank} className="flex items-center text-sm">
-                                        <div className="w-16 font-bold text-slate-600 dark:text-slate-400 flex items-center justify-end pr-3">
+                                        <div className="w-16 font-bold text-slate-400 flex items-center justify-end pr-3">
                                           {isFirst && <Trophy className="h-3 w-3 mr-1 text-amber-500" />}
                                           {rank}{rank === "1" ? "st" : rank === "2" ? "nd" : rank === "3" ? "rd" : "th"}
                                         </div>
-                                        <div className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-r-md h-8 flex items-center relative group">
+                                        <div className="flex-1 bg-slate-700 rounded-r-md h-8 flex items-center relative group">
                                           <div 
-                                            className={`h-full rounded-r-md transition-all duration-1000 ${isFirst ? 'bg-amber-400 dark:bg-amber-500' : 'bg-indigo-300 dark:bg-indigo-500'}`} 
+                                            className={`h-full rounded-r-md transition-all duration-1000 ${isFirst ? 'bg-amber-500' : 'bg-indigo-500'}`} 
                                             style={{ width: `${percentage}%` }}
                                           ></div>
-                                          <span className="absolute left-3 text-xs font-bold text-slate-800 dark:text-slate-200 drop-shadow-sm">
+                                          <span className="absolute left-3 text-xs font-bold text-slate-200 drop-shadow-sm">
                                             {count} {count === 1 ? 'time' : 'times'}
                                           </span>
                                         </div>
@@ -1203,7 +1130,7 @@ export default function App() {
                                     );
                                   })}
                                 </div>
-                                <p className="text-xs text-slate-400 dark:text-slate-500 mt-6 italic bg-slate-50 dark:bg-slate-800/50 p-3 rounded border border-slate-100 dark:border-slate-700">
+                                <p className="text-xs text-slate-500 mt-6 italic bg-slate-800/50 p-3 rounded border border-slate-700">
                                   * Placements are calculated per session. Missing scores use BGG win flags to determine 1st place.
                                 </p>
                               </div>
@@ -1223,13 +1150,13 @@ export default function App() {
         {/* Add/Edit Custom Play Modal */}
         {showAddPlay && (
           <div className="fixed inset-0 bg-black/60 flex items-start sm:items-center justify-center p-4 z-50 overflow-y-auto animate-in fade-in">
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-lg my-8 overflow-hidden border border-slate-200 dark:border-slate-700 flex flex-col max-h-[90vh]">
-              <div className="flex justify-between items-center p-5 border-b border-slate-200 dark:border-slate-700 shrink-0">
-                <h3 className="font-bold text-lg text-slate-900 dark:text-white flex items-center">
+            <div className="bg-slate-800 rounded-xl shadow-xl w-full max-w-lg my-8 overflow-hidden border border-slate-700 flex flex-col max-h-[90vh]">
+              <div className="flex justify-between items-center p-5 border-b border-slate-700 shrink-0">
+                <h3 className="font-bold text-lg text-white flex items-center">
                   <Database className="h-5 w-5 mr-2 text-indigo-500" />
                   {editingPlayId ? 'Edit Custom Play' : 'Log Custom Play'}
                 </h3>
-                <button onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
+                <button onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="text-slate-400 hover:text-slate-200 transition-colors">
                   <X className="h-5 w-5" />
                 </button>
               </div>
@@ -1238,7 +1165,7 @@ export default function App() {
                 <form id="add-play-form" onSubmit={handleSavePlay} className="space-y-5">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="sm:col-span-2">
-                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Game <span className="text-red-500">*</span></label>
+                      <label className="block text-sm font-medium text-slate-300 mb-1">Game <span className="text-red-500">*</span></label>
                       <select 
                         required 
                         value={newPlayForm.gameId} 
@@ -1247,7 +1174,7 @@ export default function App() {
                           const gName = collection.find(g => g.id === gId)?.name || '';
                           setNewPlayForm({...newPlayForm, gameId: gId, gameName: gName})
                         }}
-                        className="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                        className="w-full p-2.5 border border-slate-600 rounded-lg bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 outline-none"
                       >
                         <option value="">Select a game from collection...</option>
                         {collection.sort((a,b)=>a.name.localeCompare(b.name)).map(g => (
@@ -1257,24 +1184,24 @@ export default function App() {
                     </div>
                     
                     <div className="sm:col-span-2">
-                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Date Played</label>
+                      <label className="block text-sm font-medium text-slate-300 mb-1">Date Played</label>
                       <input 
                         type="date" 
                         required 
                         value={newPlayForm.date} 
                         onChange={e => setNewPlayForm({...newPlayForm, date: e.target.value})} 
-                        className="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none" 
+                        className="w-full p-2.5 border border-slate-600 rounded-lg bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 outline-none" 
                       />
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+                  <div className="pt-2 border-t border-slate-700">
                     <div className="flex justify-between items-center mb-3">
-                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Players</label>
+                      <label className="block text-sm font-medium text-slate-300">Players</label>
                       <button 
                         type="button" 
                         onClick={handleAddPlayer} 
-                        className="text-xs bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded font-medium flex items-center hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
+                        className="text-xs bg-indigo-900/30 text-indigo-400 px-2 py-1 rounded font-medium flex items-center hover:bg-indigo-900/50 transition-colors"
                       >
                         <Plus className="h-3 w-3 mr-1" /> Add Player
                       </button>
@@ -1282,7 +1209,7 @@ export default function App() {
                     
                     <div className="space-y-2">
                       {newPlayForm.players.map((p, idx) => (
-                        <div key={idx} className="flex gap-2 items-center bg-slate-50 dark:bg-slate-900/50 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                        <div key={idx} className="flex gap-2 items-center bg-slate-900/50 p-2.5 rounded-lg border border-slate-700">
                           <input 
                             required
                             type="text" 
@@ -1290,23 +1217,23 @@ export default function App() {
                             placeholder="Name" 
                             value={p.name} 
                             onChange={(e) => handlePlayerChange(idx, 'name', e.target.value)} 
-                            className="flex-1 min-w-0 p-1.5 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
+                            className="flex-1 min-w-0 p-1.5 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
                           />
                           <input 
                             type="number" 
                             placeholder="Score" 
                             value={p.score} 
                             onChange={(e) => handlePlayerChange(idx, 'score', e.target.value)} 
-                            className="w-16 sm:w-20 p-1.5 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
+                            className="w-16 sm:w-20 p-1.5 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" 
                           />
-                          <label className="flex items-center justify-center cursor-pointer p-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title="Winner">
+                          <label className="flex items-center justify-center cursor-pointer p-1.5 bg-slate-800 border border-slate-600 rounded hover:bg-slate-700 transition-colors" title="Winner">
                             <input 
                               type="checkbox" 
                               checked={p.win} 
                               onChange={(e) => handlePlayerChange(idx, 'win', e.target.checked)} 
                               className="sr-only" 
                             />
-                            <Trophy className={`h-4 w-4 ${p.win ? 'text-amber-500' : 'text-slate-300 dark:text-slate-600'}`} />
+                            <Trophy className={`h-4 w-4 ${p.win ? 'text-amber-500' : 'text-slate-600'}`} />
                           </label>
                           {newPlayForm.players.length > 1 && (
                             <button 
@@ -1332,9 +1259,9 @@ export default function App() {
                 </form>
               </div>
               
-              <div className="p-5 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 shrink-0">
+              <div className="p-5 border-t border-slate-700 bg-slate-800/50 shrink-0">
                 <div className="flex gap-3">
-                  <button type="button" onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="flex-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 p-2.5 rounded-lg font-medium transition-colors">Cancel</button>
+                  <button type="button" onClick={() => { setShowAddPlay(false); setEditingPlayId(null); }} className="flex-1 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-slate-200 p-2.5 rounded-lg font-medium transition-colors">Cancel</button>
                   <button type="submit" form="add-play-form" className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 rounded-lg font-medium transition-colors shadow-sm">
                     {editingPlayId ? 'Update Play' : 'Save Play'}
                   </button>
@@ -1347,46 +1274,46 @@ export default function App() {
         {/* Alias Management Modal */}
         {showAliasModal && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 animate-in fade-in">
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700 flex flex-col max-h-[90vh]">
-              <div className="flex justify-between items-center p-5 border-b border-slate-200 dark:border-slate-700">
-                <h3 className="font-bold text-lg text-slate-900 dark:text-white flex items-center">
+            <div className="bg-slate-800 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-700 flex flex-col max-h-[90vh]">
+              <div className="flex justify-between items-center p-5 border-b border-slate-700">
+                <h3 className="font-bold text-lg text-white flex items-center">
                   <Settings className="h-5 w-5 mr-2 text-indigo-500" />
                   Manage Player Aliases
                 </h3>
-                <button onClick={() => setShowAliasModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
+                <button onClick={() => setShowAliasModal(false)} className="text-slate-400 hover:text-slate-200 transition-colors">
                   <X className="h-5 w-5" />
                 </button>
               </div>
               
               <div className="p-5 overflow-y-auto">
-                <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
+                <p className="text-sm text-slate-400 mb-6">
                   Link multiple names (like "Inboundbreeze" on BGG and "Richard" on custom plays) to combine their stats.
                 </p>
 
-                <form onSubmit={handleSaveAlias} className="flex gap-2 items-end mb-8 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
+                <form onSubmit={handleSaveAlias} className="flex gap-2 items-end mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-700">
                   <div className="flex-1">
-                    <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Old Alias (e.g. Inboundbreeze)</label>
-                    <input required type="text" value={aliasForm.from} onChange={e => setAliasForm({...aliasForm, from: e.target.value})} className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
+                    <label className="block text-xs font-medium text-slate-400 mb-1">Old Alias (e.g. Inboundbreeze)</label>
+                    <input required type="text" value={aliasForm.from} onChange={e => setAliasForm({...aliasForm, from: e.target.value})} className="w-full p-2 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
                   </div>
                   <ArrowRight className="h-5 w-5 text-slate-400 mb-2.5 shrink-0"/>
                   <div className="flex-1">
-                    <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Main Name (e.g. Richard)</label>
-                    <input required type="text" value={aliasForm.to} onChange={e => setAliasForm({...aliasForm, to: e.target.value})} className="w-full p-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
+                    <label className="block text-xs font-medium text-slate-400 mb-1">Main Name (e.g. Richard)</label>
+                    <input required type="text" value={aliasForm.to} onChange={e => setAliasForm({...aliasForm, to: e.target.value})} className="w-full p-2 border border-slate-600 rounded bg-slate-800 text-white focus:ring-1 focus:ring-indigo-500 outline-none text-sm" />
                   </div>
                   <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 rounded text-sm font-medium transition-colors h-[38px] mb-[1px]">Add</button>
                 </form>
 
-                <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-3 text-sm uppercase tracking-wider">Active Aliases</h4>
+                <h4 className="font-bold text-slate-200 mb-3 text-sm uppercase tracking-wider">Active Aliases</h4>
                 {Object.keys(aliases).length === 0 ? (
-                  <p className="text-sm text-slate-500 dark:text-slate-500 italic border border-dashed border-slate-300 dark:border-slate-700 p-4 rounded-lg text-center">No aliases defined yet.</p>
+                  <p className="text-sm text-slate-500 italic border border-dashed border-slate-700 p-4 rounded-lg text-center">No aliases defined yet.</p>
                 ) : (
                   <ul className="space-y-2">
                     {Object.entries(aliases).map(([from, to]) => (
-                      <li key={from} className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 rounded-lg shadow-sm">
+                      <li key={from} className="flex justify-between items-center bg-slate-800 border border-slate-700 p-3 rounded-lg shadow-sm">
                         <div className="flex items-center text-sm">
-                          <span className="text-slate-500 dark:text-slate-400 line-through decoration-slate-300 mr-2">{from}</span>
+                          <span className="text-slate-400 line-through decoration-slate-300 mr-2">{from}</span>
                           <ArrowRight className="h-3 w-3 text-slate-400 mr-2" />
-                          <span className="font-bold text-indigo-600 dark:text-indigo-400">{to}</span>
+                          <span className="font-bold text-indigo-400">{to}</span>
                         </div>
                         <button onClick={() => handleRemoveAlias(from)} className="text-slate-400 hover:text-red-500 transition-colors p-1">
                           <Trash2 className="h-4 w-4" />
