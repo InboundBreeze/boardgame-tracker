@@ -82,8 +82,8 @@ export default function App() {
       let isRateLimited = false;
 
       const endpoints = [];
-      // Prevent relative URL fetching in sandboxed blob environments to avoid "Failed to parse URL" crashes
-      const isSandboxEnvironment = window.location.protocol.includes('blob') || window.location.origin === 'null';
+      // Prevent relative URL fetching in sandboxed environments
+      const isSandboxEnvironment = window.location.protocol.includes('blob') || window.location.origin === 'null' || window.location.hostname.includes('usercontent.goog');
       
       if (!isSandboxEnvironment) {
         // 1. Vite Local Proxy (Solves local dev CORS automatically)
@@ -94,9 +94,9 @@ export default function App() {
 
       // 3. Fallback Public Proxies
       endpoints.push(
-        { name: "CorsProxy.io", url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, isJson: false },
+        { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, isJson: false },
         { name: "AllOrigins (JSON)", url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, isJson: true },
-        { name: "AllOrigins (Raw)", url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, isJson: false },
+        { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}`, isJson: false },
         { name: "Direct", url: targetUrl, isJson: false }
       );
 
@@ -118,9 +118,16 @@ export default function App() {
 
           // Process JSON proxies vs Raw proxies
           if (endpoint.isJson) {
-            const data = await res.json();
-            text = data.contents || "";
-            status = data.status?.http_code || res.status;
+            const rawText = await res.text();
+            if (!rawText) throw new Error("Empty response");
+            try {
+              const data = JSON.parse(rawText);
+              text = data.contents || "";
+              status = data.status?.http_code || res.status;
+            } catch (e) {
+              throw new Error("Invalid JSON: " + e.message);
+            }
+            
             if (status === 429) {
               isRateLimited = true;
               debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
