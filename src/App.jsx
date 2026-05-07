@@ -7,12 +7,12 @@ import { getFirestore, collection as firestoreCollection, onSnapshot, addDoc, do
 // --- SAFE FIREBASE INITIALIZATION ---
 const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
 let firebaseConfig = {
-  apiKey: "AIzaSyBbRbosmqtueb_rUjojNRZzpfvWk4wSiFc",
-  authDomain: "boardgame-tracker-76d32.firebaseapp.com",
-  projectId: "boardgame-tracker-76d32",
-  storageBucket: "boardgame-tracker-76d32.firebasestorage.app",
-  messagingSenderId: "878855163365",
-  appId: "1:878855163365:web:1723f1e5ec50ae4bf1b30c"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 // Attempt to inject Canvas environment keys if they exist
@@ -74,18 +74,6 @@ export default function App() {
 
   const [newPlayForm, setNewPlayForm] = useState(initialPlayForm); 
 
-  const mockData = [
-    { id: "1", name: "Terraforming Mars", year: "2016", plays: 12, myRating: 9.0, avgRating: 8.4, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/wg9oOLcsKvDesSUdZQ4rxw__itemrep/img/r2B9e3vI-k7F9B18R7YdG5p5J-g=/fit-in/246x300/filters:strip_icc()/pic3536616.jpg" },
-    { id: "2", name: "Scythe", year: "2016", plays: 5, myRating: 8.5, avgRating: 8.2, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/7k_nGLr-fc4pE-aGjTqEzw__itemrep/img/rM6Nq-8EsqG_5gQ5tD8XvW5I-vY=/fit-in/246x300/filters:strip_icc()/pic3163924.jpg" },
-    { id: "3", name: "Wingspan", year: "2019", plays: 24, myRating: 8.0, avgRating: 8.1, minPlayers: 1, maxPlayers: 5, image: "https://cf.geekdo-images.com/yLZJCVLlIxCGa7x12vQvNQ__itemrep/img/sH7hFq-fO6Aqz_18R8hH_N1R4A4=/fit-in/246x300/filters:strip_icc()/pic4458123.jpg" },
-    { id: "4", name: "Gloomhaven", year: "2017", plays: 45, myRating: 10.0, avgRating: 8.7, minPlayers: 1, maxPlayers: 4, image: "https://cf.geekdo-images.com/sZYp_3BTDGjh2unaZfZmuA__itemrep/img/D8_yB1E4d5xM-9gD1yqU4k_E0U=/fit-in/246x300/filters:strip_icc()/pic2437871.jpg" }
-  ];
-
-  const mockPlays = [
-    { id: "101", date: "2023-10-24", game: "Terraforming Mars", image: "https://cf.geekdo-images.com/wg9oOLcsKvDesSUdZQ4rxw__itemrep/img/r2B9e3vI-k7F9B18R7YdG5p5J-g=/fit-in/246x300/filters:strip_icc()/pic3536616.jpg", players: [{ name: "Inboundbreeze", score: "88", win: true }, { name: "Alex", score: "75", win: false }] },
-    { id: "102", date: "2023-10-20", game: "Ark Nova", image: "https://cf.geekdo-images.com/BsqHbpWrd5FjiU2B2gUq6A__itemrep/img/F-4L1U-uQ-mH_5B_rA-XF1O9Bw=/fit-in/246x300/filters:strip_icc()/pic6223450.jpg", players: [{ name: "Inboundbreeze", score: "24", win: false }, { name: "Sarah", score: "35", win: true }] }
-  ];
-
   const fetchCollection = async (e) => {
     if (e) e.preventDefault();
     
@@ -107,12 +95,12 @@ export default function App() {
       try {
         const apiRes = await fetch(`/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`);
         const text = await apiRes.text();
-        // Check if Vite intercepted this locally and returned HTML instead of XML
-        if (apiRes.ok && !text.trim().toLowerCase().startsWith("<!doctype html>") && !text.trim().toLowerCase().startsWith("<html")) {
+        if (apiRes.ok && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
           return { text: text, status: apiRes.status };
         }
+        console.warn("Serverless API /api/bgg failed or returned HTML, falling back to proxies...");
       } catch (e) {
-        // Ignore errors from missing /api/bgg endpoint when running locally or in Canvas
+        console.warn("Serverless API /api/bgg fetch threw an error:", e);
       }
 
       let responseText = null;
@@ -121,7 +109,14 @@ export default function App() {
 
       const strategies = [
         async () => { const res = await fetch(targetUrl); return { text: await res.text(), status: res.status }; },
-        async () => { const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); const data = await res.json(); if (data.contents) return { text: data.contents, status: data.status?.http_code || 200 }; throw new Error("Invalid AllOrigins response"); },
+        async () => { 
+          const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); 
+          const rawText = await res.text();
+          if (!rawText) throw new Error("Empty response from AllOrigins proxy");
+          const data = JSON.parse(rawText); 
+          if (data.contents) return { text: data.contents, status: data.status?.http_code || 200 }; 
+          throw new Error("Invalid AllOrigins response"); 
+        },
         async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
         async () => { const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
       ];
@@ -129,20 +124,17 @@ export default function App() {
       for (const strategy of strategies) {
         try {
           const result = await strategy();
-          if (result.text && (result.status === 200 || result.status === 202)) {
-            responseText = result.text;
-            statusCode = result.status;
-            break;
+          if (result.text && !result.text.trim().toLowerCase().startsWith("<!doctype") && !result.text.trim().toLowerCase().startsWith("<html")) {
+            if (result.status === 200 || result.status === 202) {
+              responseText = result.text;
+              statusCode = result.status;
+              break;
+            }
           }
         } catch (err) { fetchError = err; }
       }
 
-      if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message}`);
-      
-      const lowerText = responseText.trim().toLowerCase();
-      if (lowerText.startsWith("<!doctype html>") || lowerText.startsWith("<html")) {
-        throw new Error(`Received HTML instead of XML. Proxy likely rate-limited.`);
-      }
+      if (!responseText) throw new Error(`BGG Sync failed. Details: ${fetchError?.message || "All proxies failed or returned HTML"}`);
       
       return { text: responseText, status: statusCode };
     };
