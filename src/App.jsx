@@ -7,12 +7,12 @@ import { getFirestore, collection as firestoreCollection, onSnapshot, addDoc, do
 // --- SAFE FIREBASE INITIALIZATION ---
 const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
 let firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyBbRbosmqtueb_rUjojNRZzpfvWk4wSiFc",
+  authDomain: "boardgame-tracker-76d32.firebaseapp.com",
+  projectId: "boardgame-tracker-76d32",
+  storageBucket: "boardgame-tracker-76d32.firebasestorage.app",
+  messagingSenderId: "878855163365",
+  appId: "1:878855163365:web:1723f1e5ec50ae4bf1b30c"
 };
 
 // Attempt to inject Canvas environment keys if they exist
