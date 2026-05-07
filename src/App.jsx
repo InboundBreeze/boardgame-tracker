@@ -24,7 +24,9 @@ const app = isFirebaseValid ? initializeApp(firebaseConfig) : null;
 const auth = isFirebaseValid ? getAuth(app) : null;
 const db = isFirebaseValid ? getFirestore(app) : null;
 
-const appId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
+// Sanitize appId to ensure it is a valid single segment in Firestore paths
+const rawAppId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
+const safeAppId = rawAppId.replace(/\//g, '_');
 
 export default function App() {
   // Hardcoded Username for Production
@@ -70,59 +72,73 @@ export default function App() {
     setLoading(true);
     setError(null);
 
-    // Smart fetcher: Tries Vercel Serverless Function first, falls back to raw proxies
     const fetchBGG = async (targetUrl, apiType) => {
-      try {
-        const apiRes = await fetch(`/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}`);
-        const text = await apiRes.text();
-        if (apiRes.ok && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
-          return { text: text, status: apiRes.status };
-        }
-      } catch (e) {
-        console.warn("Serverless API /api/bgg unavailable, falling back to proxies...");
-      }
-
-      let responseText = null;
-      let statusCode = null;
+      console.log(`\n--- [BGG Sync] Starting fetch for: ${apiType} ---`);
+      console.log(`[BGG Sync] Target URL: ${targetUrl}`);
+      
+      const debugLogs = [];
+      let finalResponse = null;
+      let finalStatus = null;
       let isRateLimited = false;
 
-      const strategies = [
-        async () => { const res = await fetch(targetUrl); return { text: await res.text(), status: res.status }; },
-        async () => { const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
-        async () => { const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; },
-        async () => { const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`); return { text: await res.text(), status: res.status }; }
+      const endpoints = [
+        // 1. Vite Local Proxy (Solves local dev CORS automatically)
+        { name: "Vite Proxy", url: `/bgg-proxy/xmlapi2/${apiType === 'plays' ? 'plays' : 'collection'}?username=${encodeURIComponent(username)}${apiType === 'collection' ? '&stats=1' : ''}` },
+        // 2. Vercel Serverless Function (For Production)
+        { name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}` },
+        // 3. Fallback Public Proxies
+        { name: "AllOrigins", url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}` },
+        { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}` },
+        { name: "Direct", url: targetUrl }
       ];
 
-      for (const strategy of strategies) {
+      for (const endpoint of endpoints) {
+        console.log(`[BGG Sync] Attempting endpoint: ${endpoint.name}`);
         try {
-          const result = await strategy();
+          const res = await fetch(endpoint.url);
+          console.log(`[BGG Sync] ${endpoint.name} returned status: ${res.status}`);
           
-          if (result.status === 429) {
+          if (res.status === 429) {
             isRateLimited = true;
+            debugLogs.push(`${endpoint.name} (429 Rate Limit)`);
+            console.warn(`[BGG Sync] ${endpoint.name} hit BGG Rate Limit (429).`);
             continue;
           }
 
-          if (result.text && !result.text.trim().toLowerCase().startsWith("<!doctype") && !result.text.trim().toLowerCase().startsWith("<html")) {
-            if (result.status === 200 || result.status === 202) {
-              responseText = result.text;
-              statusCode = result.status;
-              break;
-            }
+          const text = await res.text();
+          
+          // Validate it's actually XML and not an HTML error page or SPA fallback
+          if (res.ok && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
+            console.log(`[BGG Sync] ${endpoint.name} SUCCESS! Fetched ${text.length} characters of XML.`);
+            finalResponse = text;
+            finalStatus = res.status;
+            break; // Success! Stop checking endpoints.
+          } else {
+             const snippet = text ? text.substring(0, 50).replace(/\n/g, '') : "Empty";
+             debugLogs.push(`${endpoint.name} (${res.status}: ${snippet}...)`);
+             console.warn(`[BGG Sync] ${endpoint.name} returned invalid XML or HTML fallback. Snippet: ${snippet}...`);
           }
-        } catch (err) { /* ignore and try next proxy */ }
+        } catch (err) {
+          console.error(`[BGG Sync] ${endpoint.name} Network Error:`, err);
+          debugLogs.push(`${endpoint.name} (Network Error: ${err.message})`);
+        }
       }
 
-      if (!responseText) {
-        if (isRateLimited) throw new Error("BGG Rate Limit Reached (Too Many Requests). Please wait 30 seconds and click Sync again.");
-        throw new Error("BGG Sync failed. The API may be temporarily down or blocked.");
+      if (!finalResponse) {
+        console.error(`[BGG Sync] ALL endpoints failed for ${apiType}.`);
+        if (isRateLimited) throw new Error("BGG Rate Limit Reached (429). Please wait 60 seconds.");
+        throw new Error(`Sync failed. Debug Log: ${debugLogs.join(" | ")}`);
       }
-      return { text: responseText, status: statusCode };
+
+      return { text: finalResponse, status: finalStatus };
     };
 
     try {
+      console.log("[BGG Sync] Initiating Collection Fetch...");
       const collectionRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`, 'collection');
       
       if (collectionRes.status === 202) {
+        console.log("[BGG Sync] Received 202 Accepted. BGG is preparing the collection.");
         setError("BGG is preparing your data. This can take a few moments. Please click Sync again in 30 seconds.");
         setLoading(false);
         return;
@@ -134,6 +150,7 @@ export default function App() {
       if (errorNode) throw new Error(`BGG API Message: ${errorNode.textContent}`);
 
       const items = collXml.querySelectorAll("item");
+      console.log(`[BGG Sync] Successfully parsed ${items.length} games from collection XML.`);
       if (items.length === 0) throw new Error(`No games found for ${username}.`);
 
       const parsedGames = Array.from(items).map(item => {
@@ -158,13 +175,17 @@ export default function App() {
       setCollection(parsedGames);
 
       // DELAY added to prevent BGG 429 Rate Limiting
+      console.log("[BGG Sync] Waiting 1.5 seconds to avoid rate limits before fetching plays...");
       await new Promise(resolve => setTimeout(resolve, 1500));
 
       try {
+        console.log("[BGG Sync] Initiating Plays Fetch...");
         const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
         const playsXml = parser.parseFromString(playsRes.text, "text/xml");
         
         const playNodes = playsXml.querySelectorAll("play");
+        console.log(`[BGG Sync] Successfully parsed ${playNodes.length} plays from XML.`);
+        
         const parsedPlays = Array.from(playNodes).map(play => {
           const itemNode = play.querySelector("item");
           const gameId = itemNode?.getAttribute("objectid");
@@ -186,12 +207,14 @@ export default function App() {
           };
         });
         setPlaysData(parsedPlays);
+        console.log("[BGG Sync] Complete Sync Finished Successfully.");
       } catch (playErr) {
-        console.warn("Failed to fetch plays, continuing with collection...", playErr);
+        console.error("[BGG Sync] Failed to fetch plays, continuing with collection:", playErr);
         setPlaysData([]); 
       }
 
     } catch (err) {
+      console.error("[BGG Sync] FATAL SYNC ERROR:", err);
       setError(err.message || "An unexpected error occurred.");
     } finally {
       setLoading(false);
@@ -338,13 +361,13 @@ export default function App() {
   useEffect(() => {
     if (!user || !db) return;
     
-    const playsRef = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+    const playsRef = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
     const unsubscribePlays = onSnapshot(playsRef, (snapshot) => {
       const plays = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
       setCustomPlays(plays);
     });
 
-    const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
+    const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
     const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
       if (docSnap.exists()) {
         setAliases(docSnap.data());
@@ -394,7 +417,7 @@ export default function App() {
   const handleDeletePlay = async (firebaseId) => {
     if (!user || !db) return;
     try {
-      const playDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'plays', firebaseId);
+      const playDoc = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'plays', firebaseId);
       await deleteDoc(playDoc);
     } catch (error) {
       console.error("Error deleting play:", error);
@@ -438,7 +461,7 @@ export default function App() {
     }
     
     try {
-      const playsColl = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+      const playsColl = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
       const payload = {
         id: editingPlayId ? editingPlayId : 'custom-' + Date.now(),
         date: newPlayForm.date,
@@ -449,7 +472,7 @@ export default function App() {
       };
 
       if (editingPlayId) {
-        const playDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'plays', editingPlayId);
+        const playDoc = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'plays', editingPlayId);
         await updateDoc(playDoc, payload);
       } else {
         await addDoc(playsColl, payload);
@@ -512,7 +535,7 @@ export default function App() {
 
       try {
         const batch = writeBatch(db);
-        const playsColl = firestoreCollection(db, 'artifacts', appId, 'users', user.uid, 'plays');
+        const playsColl = firestoreCollection(db, 'artifacts', safeAppId, 'users', user.uid, 'plays');
         
         playsToImport.forEach(play => {
           const newDocRef = doc(playsColl);
@@ -540,7 +563,7 @@ export default function App() {
     };
     
     try {
-      const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
+      const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
       await setDoc(aliasRef, newAliases);
       setAliasForm({ from: '', to: '' });
       setAliases(newAliases);
@@ -555,7 +578,7 @@ export default function App() {
     delete newAliases[keyToRemove];
     
     try {
-      const aliasRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'aliases');
+      const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
       await setDoc(aliasRef, newAliases);
       setAliases(newAliases);
     } catch (error) {
