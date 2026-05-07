@@ -139,7 +139,8 @@ export default function App() {
           }
           
           // Validate it's actually XML and not an HTML error page or SPA fallback
-          if ((res.ok || (endpoint.isJson && text)) && text && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
+          // Also check length > 20 to reject "200: Empty..." responses from struggling proxies
+          if ((res.ok || (endpoint.isJson && text)) && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
             console.log(`[BGG Sync] ${endpoint.name} SUCCESS! Fetched ${text.length} characters of XML.`);
             finalResponse = text;
             finalStatus = status;
@@ -158,6 +159,9 @@ export default function App() {
       if (!finalResponse) {
         console.error(`[BGG Sync] ALL endpoints failed for ${apiType}.`);
         if (isRateLimited) throw new Error("BGG Rate Limit Reached (429). Please wait 60 seconds.");
+        if (isSandboxEnvironment) {
+          throw new Error("Preview Environment Blocked: Public proxies are failing to fetch BGG data. Please use the 'Live Data Mode' toggle above to view Mock Data, or deploy to Vercel to use the secure serverless API.");
+        }
         throw new Error(`Sync failed. Debug Log: ${debugLogs.join(" | ")}`);
       }
 
