@@ -61,14 +61,15 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // Smart fetcher that mimics a browser and uses fallbacks if GitHub's IPs are blocked
-const fetchBGG = async (targetUrl) => {
+const fetchBGG = async (targetUrl, retries = 2) => {
   // Add a delay to respect BGG rate limits
   await new Promise(r => setTimeout(r, 2000));
 
   const endpoints = [
-    { name: "Direct", url: targetUrl },
-    { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}` },
-    { name: "ThingProxy", url: `https://thingproxy.freeboard.io/fetch/${targetUrl}` }
+    { name: "Direct", url: targetUrl, isJson: false },
+    { name: "AllOrigins-JSON", url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, isJson: true },
+    { name: "CORSProxy.io", url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, isJson: false },
+    { name: "CodeTabs", url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, isJson: false }
   ];
 
   const debugLogs = [];
@@ -79,13 +80,17 @@ const fetchBGG = async (targetUrl) => {
     try {
       const res = await fetch(endpoint.url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/xml, text/xml, */*'
+          // BGG is less likely to block honest scripts than scripts spoofing Chrome from a datacenter IP
+          'User-Agent': 'BoardgameTrackerSyncScript/1.0 (Automated GitHub Action)',
+          'Accept': endpoint.isJson ? 'application/json' : 'application/xml, text/xml, */*'
         }
       });
 
       if (res.status === 202) {
-         throw new Error("202 Accepted: BGG is preparing the data. Please re-run the GitHub Action in 1 minute.");
+         console.log("  -> 202 Accepted. BGG is building the data. Waiting 10 seconds before retry...");
+         await new Promise(r => setTimeout(r, 10000));
+         if (retries > 0) return fetchBGG(targetUrl, retries - 1);
+         throw new Error("202 Accepted: BGG is still preparing the data. Please re-run the GitHub Action later.");
       }
 
       if (res.status === 429) {
@@ -93,10 +98,17 @@ const fetchBGG = async (targetUrl) => {
          continue;
       }
 
-      const text = await res.text();
+      let text = "";
+      if (endpoint.isJson) {
+         // Parse the JSON wrapper to extract the raw XML string
+         const data = await res.json();
+         text = data.contents || "";
+      } else {
+         text = await res.text();
+      }
 
       // Ensure we actually got XML back and not a Cloudflare "Verify you are human" HTML page
-      if (res.ok && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
+      if ((res.ok || (endpoint.isJson && text)) && text && text.trim().length > 20 && !text.trim().toLowerCase().startsWith("<!doctype") && !text.trim().toLowerCase().startsWith("<html")) {
         console.log(`  -> Success via ${endpoint.name}!`);
         finalResponse = text;
         break;
