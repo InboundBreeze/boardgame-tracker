@@ -72,7 +72,16 @@ const fetchBGG = async (url) => {
 const runSync = async () => {
   try {
     console.log("Authenticating with Firebase...");
-    await signInAnonymously(auth);
+    try {
+      await signInAnonymously(auth);
+      console.log("Authentication successful.");
+    } catch (authErr) {
+      console.warn(`\n--- FIREBASE AUTH WARNING ---`);
+      console.warn(`Error: ${authErr.code}`);
+      console.warn(`It looks like 'Anonymous' sign-in is not enabled in your Firebase console.`);
+      console.warn(`Because your database might be in 'Test Mode', the script will try to continue anyway!`);
+      console.warn(`To fix this properly: Go to Firebase Console -> Authentication -> Sign-in method -> Enable 'Anonymous'.\n`);
+    }
 
     console.log(`Fetching BGG Collection for ${username}...`);
     const collXmlStr = await fetchBGG(`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`);
