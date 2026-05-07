@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, X, Trash2, Settings, ArrowRight, UploadCloud, Download, RefreshCw } from 'lucide-react';
+import { Loader2, Star, Play, Library, AlertCircle, TrendingUp, Filter, LayoutDashboard, Grid, BarChart3, Trophy, History, Calendar, Users, Award, UserCircle, X, Trash2, Settings, ArrowRight, UploadCloud, Download, RefreshCw, Lock, Unlock, Cloud } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, collection as firestoreCollection, writeBatch } from 'firebase/firestore';
 
 // --- SAFE FIREBASE INITIALIZATION ---
 const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
@@ -24,20 +24,24 @@ const app = isFirebaseValid ? initializeApp(firebaseConfig) : null;
 const auth = isFirebaseValid ? getAuth(app) : null;
 const db = isFirebaseValid ? getFirestore(app) : null;
 
+// Sanitize appId: The environment sometimes appends filepaths (e.g. "id_src/App.jsx").
+// Splitting by slash ensures we only use the base App ID, preventing Firebase 6-segment path crashes.
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : "boardgame-tracker-live";
-const safeAppId = rawAppId.replace(/\//g, '_');
+const appId = rawAppId.split('/')[0];
 
 export default function App() {
-  // Hardcoded Username for Production
+  // Hardcoded Username
   const [username] = useState('Inboundbreeze'); 
   
+  // App State
   const [collection, setCollection] = useState([]);
   const [playsData, setPlaysData] = useState([]); 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [user, setUser] = useState(null); 
+  const [isAdmin, setIsAdmin] = useState(false); // Admin mode hides buttons from friends
   
-  // Dashboard State
+  // Dashboard UI State
   const [sortBy, setSortBy] = useState('name');
   const [filterPlayers, setFilterPlayers] = useState('any'); 
   const [filterMinRating, setFilterMinRating] = useState('0'); 
@@ -57,7 +61,7 @@ export default function App() {
     return aliases[lowerName] || name.trim();
   };
 
-  // --- FIREBASE AUTH & ALIAS SYNC ---
+  // --- FIREBASE AUTH & LIVE SYNC LISTENERS ---
   useEffect(() => {
     if (!auth) return; 
     const initAuth = async () => {
@@ -77,18 +81,68 @@ export default function App() {
   useEffect(() => {
     if (!user || !db) return;
     
-    // Listen for aliases saved in cloud
-    const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
-    const unsubscribeAliases = onSnapshot(aliasRef, (docSnap) => {
+    // 1. Listen for Live Games Collection from Cloud Cache
+    const gamesRef = firestoreCollection(db, 'artifacts', appId, 'public', 'data', 'bgg_games');
+    const unsubGames = onSnapshot(gamesRef, (snapshot) => {
+      setCollection(snapshot.docs.map(doc => doc.data()));
+    }, (err) => console.error("Error loading games:", err));
+
+    // 2. Listen for Live Plays from Cloud Cache
+    const playsRef = firestoreCollection(db, 'artifacts', appId, 'public', 'data', 'bgg_plays');
+    const unsubPlays = onSnapshot(playsRef, (snapshot) => {
+      setPlaysData(snapshot.docs.map(doc => doc.data()));
+    }, (err) => console.error("Error loading plays:", err));
+
+    // 3. Listen for Aliases
+    const aliasRef = doc(db, 'artifacts', appId, 'public', 'data', 'bgg_settings', 'aliases');
+    const unsubAliases = onSnapshot(aliasRef, (docSnap) => {
       if (docSnap.exists()) {
         setAliases(docSnap.data());
       } else {
         setAliases({}); 
       }
-    });
+    }, (err) => console.error("Error loading aliases:", err));
 
-    return () => unsubscribeAliases();
+    return () => { unsubGames(); unsubPlays(); unsubAliases(); };
   }, [user]);
+
+  // --- CLOUD WRITE HELPERS (Admin Only) ---
+  const saveGamesToCloud = async (gamesArray) => {
+    if (!db || !user) return;
+    const gamesRef = firestoreCollection(db, 'artifacts', appId, 'public', 'data', 'bgg_games');
+    let batch = writeBatch(db);
+    let count = 0;
+    
+    for (const game of gamesArray) {
+      batch.set(doc(gamesRef, game.id), game);
+      count++;
+      if (count === 400) { 
+        await batch.commit(); 
+        batch = writeBatch(db); 
+        count = 0; 
+      }
+    }
+    if (count > 0) await batch.commit();
+  };
+
+  const savePlaysToCloud = async (playsArray) => {
+    if (!db || !user) return;
+    const playsRef = firestoreCollection(db, 'artifacts', appId, 'public', 'data', 'bgg_plays');
+    let batch = writeBatch(db);
+    let count = 0;
+
+    for (const play of playsArray) {
+      batch.set(doc(playsRef, play.id), play);
+      count++;
+      if (count === 400) { 
+        await batch.commit(); 
+        batch = writeBatch(db); 
+        count = 0; 
+      }
+    }
+    if (count > 0) await batch.commit();
+  };
+
 
   // --- MANUAL XML PARSING LOGIC ---
   const parseCollectionXML = (xmlText) => {
@@ -119,14 +173,12 @@ export default function App() {
       };
     });
 
-    setCollection(parsedGames);
     return parsedGames;
   };
 
   const parsePlaysXML = (xmlText, currentCollection) => {
     const parser = new DOMParser();
     const playsXml = parser.parseFromString(xmlText, "text/xml");
-    
     const playNodes = playsXml.querySelectorAll("play");
     
     const parsedPlays = Array.from(playNodes).map(play => {
@@ -149,40 +201,46 @@ export default function App() {
         players: players
       };
     });
-    setPlaysData(parsedPlays);
+    return parsedPlays;
   };
 
-  const handleCollectionUpload = (e) => {
+  const handleCollectionUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setLoading(true);
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
-        parseCollectionXML(event.target.result);
+        const parsedGames = parseCollectionXML(event.target.result);
+        await saveGamesToCloud(parsedGames);
         setError(null);
         setShowManualSync(false);
-      } catch (err) { setError("Failed to parse Collection XML: " + err.message); }
+      } catch (err) { setError(String(err.message || "Failed to parse Collection XML")); }
+      finally { setLoading(false); }
     };
     reader.readAsText(file);
     e.target.value = null;
   };
 
-  const handlePlaysUpload = (e) => {
+  const handlePlaysUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setLoading(true);
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
-        parsePlaysXML(event.target.result, collection);
+        const parsedPlays = parsePlaysXML(event.target.result, collection);
+        await savePlaysToCloud(parsedPlays);
         setError(null);
         setShowManualSync(false);
-      } catch (err) { setError("Failed to parse Plays XML: " + err.message); }
+      } catch (err) { setError(String(err.message || "Failed to parse Plays XML")); }
+      finally { setLoading(false); }
     };
     reader.readAsText(file);
     e.target.value = null;
   };
 
-  // --- AUTOMATIC FETCHING ---
+  // --- AUTOMATIC FETCHING (ADMIN SYNC TO CLOUD) ---
   const fetchCollectionAuto = async (e) => {
     if (e) e.preventDefault();
     setLoading(true);
@@ -192,8 +250,8 @@ export default function App() {
       let finalResponse = null;
       let finalStatus = null;
       let isRateLimited = false;
+      const debugLogs = [];
 
-      // Prioritize Direct Fetch (Assumes CORS extension is active or running locally via Vite proxy)
       const endpoints = [
         { name: "Direct", url: targetUrl },
         { name: "Vercel API", url: `/api/bgg?user=${encodeURIComponent(username)}&type=${apiType}` },
@@ -224,6 +282,7 @@ export default function App() {
     };
 
     try {
+      // 1. Fetch & Sync Collection
       const collectionRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(username)}&stats=1`, 'collection');
       
       if (collectionRes.status === 202) {
@@ -233,19 +292,22 @@ export default function App() {
       }
 
       const parsedGames = parseCollectionXML(collectionRes.text);
+      await saveGamesToCloud(parsedGames);
 
-      // Delay to avoid hitting BGG's 429 Rate Limiter
+      // Delay to avoid BGG 429 Limit
       await new Promise(resolve => setTimeout(resolve, 1500));
 
+      // 2. Fetch & Sync Plays
       try {
         const playsRes = await fetchBGG(`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`, 'plays');
-        parsePlaysXML(playsRes.text, parsedGames);
+        const parsedPlays = parsePlaysXML(playsRes.text, parsedGames);
+        await savePlaysToCloud(parsedPlays);
       } catch (playErr) {
         console.warn("Failed to fetch plays via API, continuing with collection...", playErr);
       }
 
     } catch (err) {
-      setError(err.message || "An unexpected error occurred. Please use Manual Import.");
+      setError(String(err.message || "An unexpected error occurred. Please use Manual Import."));
     } finally {
       setLoading(false);
     }
@@ -357,28 +419,18 @@ export default function App() {
     return [...playerStatsArray].filter(p => p.wins > 0).sort((a, b) => b.wins - a.wins).slice(0, 10);
   }, [playerStatsArray]);
 
-  // Load collection automatically on mount
-  useEffect(() => {
-    fetchCollectionAuto();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // --- ALIAS HANDLERS ---
   const handleSaveAlias = async (e) => {
     e.preventDefault();
     if (!aliasForm.from.trim() || !aliasForm.to.trim()) return;
     
-    const newAliases = { 
-      ...aliases, 
-      [aliasForm.from.trim().toLowerCase()]: aliasForm.to.trim() 
-    };
-
+    const newAliases = { ...aliases, [aliasForm.from.trim().toLowerCase()]: aliasForm.to.trim() };
     setAliases(newAliases); 
     setAliasForm({ from: '', to: '' });
-
+    
     if (user && db) {
       try {
-        const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
+        const aliasRef = doc(db, 'artifacts', appId, 'public', 'data', 'bgg_settings', 'aliases');
         await setDoc(aliasRef, newAliases);
       } catch (error) { console.error("Error saving alias to cloud:", error); }
     }
@@ -387,12 +439,11 @@ export default function App() {
   const handleRemoveAlias = async (keyToRemove) => {
     const newAliases = { ...aliases };
     delete newAliases[keyToRemove];
+    setAliases(newAliases); 
     
-    setAliases(newAliases);
-
     if (user && db) {
       try {
-        const aliasRef = doc(db, 'artifacts', safeAppId, 'users', user.uid, 'settings', 'aliases');
+        const aliasRef = doc(db, 'artifacts', appId, 'public', 'data', 'bgg_settings', 'aliases');
         await setDoc(aliasRef, newAliases);
       } catch (error) { console.error("Error removing alias from cloud:", error); }
     }
@@ -406,29 +457,42 @@ export default function App() {
             <div className="flex items-center space-x-3">
               <Library className="h-8 w-8 text-indigo-400" />
               <div>
-                <h1 className="text-2xl font-bold tracking-tight">Boardgame Tracker</h1>
-                <p className="text-slate-400 text-sm">Dashboard for {resolveName(username)}</p>
+                <div className="flex items-center space-x-2">
+                  <h1 className="text-2xl font-bold tracking-tight">Boardgame Tracker</h1>
+                  <button onClick={() => setIsAdmin(!isAdmin)} className="text-slate-500 hover:text-indigo-400 transition-colors p-1" title={isAdmin ? "Lock Admin Mode" : "Unlock Admin Mode"}>
+                    {isAdmin ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                  </button>
+                </div>
+                <div className="flex items-center text-sm mt-0.5">
+                  <span className="text-slate-400 mr-2">Dashboard for {resolveName(username)}</span>
+                  {collection.length > 0 && (
+                    <span className="bg-emerald-900/30 text-emerald-400 text-xs px-2 py-0.5 rounded-full flex items-center border border-emerald-800/50">
+                      <Cloud className="h-3 w-3 mr-1" /> Live from Cloud
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             
-            <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
-              <button
-                onClick={() => setShowManualSync(true)}
-                className="bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm w-full sm:w-auto"
-              >
-                <UploadCloud className="h-4 w-4 mr-2" />
-                <span className="font-medium text-sm">Manual Import</span>
-              </button>
-              
-              <button
-                onClick={fetchCollectionAuto}
-                disabled={loading}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm disabled:bg-slate-600 disabled:cursor-not-allowed w-full sm:w-auto"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
-                <span className="font-medium text-sm">Sync with BGG</span>
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto animate-in fade-in zoom-in-95 duration-200">
+                <button
+                  onClick={() => setShowManualSync(true)}
+                  className="bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm w-full sm:w-auto text-sm font-medium"
+                >
+                  <UploadCloud className="h-4 w-4 mr-2" /> Manual Import
+                </button>
+                
+                <button
+                  onClick={fetchCollectionAuto}
+                  disabled={loading}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center shadow-sm disabled:bg-slate-600 disabled:cursor-not-allowed w-full sm:w-auto text-sm font-medium"
+                >
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                  Admin: Sync to Cloud
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -437,11 +501,11 @@ export default function App() {
           {!isFirebaseValid && (
              <div className="bg-amber-900/30 border border-amber-800 text-amber-200 px-4 py-3 rounded-lg mb-6 flex items-center shadow-sm">
                <AlertCircle className="h-5 w-5 mr-3 text-amber-400 shrink-0" />
-               <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx. Your Dashboard will still pull from BGG, but Player Aliases won't be saved to the cloud.</p>
+               <p className="text-sm"><strong>Database Not Connected:</strong> You have not entered your Firebase Keys in App.jsx. Your friends cannot see your live data until you connect Firebase.</p>
             </div>
           )}
 
-          {error && (
+          {error && isAdmin && (
             <div className="bg-red-900/30 border-l-4 border-red-500 p-4 mb-8 rounded-r-md shadow-sm flex items-start flex-col sm:flex-row">
               <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 mr-3 flex-shrink-0" />
               <div className="flex-1">
@@ -456,17 +520,13 @@ export default function App() {
 
           {!loading && collection.length === 0 && !error && (
             <div className="text-center py-20 bg-slate-800 rounded-xl shadow-sm border border-slate-700">
-              <UploadCloud className="h-16 w-16 text-slate-600 mx-auto mb-4" />
-              <h2 className="text-xl font-semibold text-slate-200">No Collection Loaded</h2>
+              <Cloud className="h-16 w-16 text-slate-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-slate-200">No Data in Cloud Database</h2>
               <p className="text-slate-400 mt-2 mb-6 max-w-md mx-auto">
-                BGG limits automated access. The most reliable way to view your data is via Manual Import, or by enabling a CORS extension in your browser.
+                {isAdmin 
+                  ? "Click 'Admin: Sync to Cloud' to fetch your latest BGG data and push it to your live dashboard for everyone to see."
+                  : "The administrator has not pushed any BGG data to the live dashboard yet."}
               </p>
-              <button 
-                onClick={() => setShowManualSync(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-sm inline-flex items-center"
-              >
-                <UploadCloud className="h-5 w-5 mr-2" /> Upload BGG Data
-              </button>
             </div>
           )}
 
@@ -865,12 +925,14 @@ export default function App() {
                             </select>
                           </div>
                         )}
-                        <button 
-                          onClick={() => setShowAliasModal(true)}
-                          className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded text-sm font-medium transition-colors flex items-center shadow-sm whitespace-nowrap"
-                        >
-                          <Settings className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Manage Aliases</span>
-                        </button>
+                        {isAdmin && (
+                          <button 
+                            onClick={() => setShowAliasModal(true)}
+                            className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded text-sm font-medium transition-colors flex items-center shadow-sm whitespace-nowrap"
+                          >
+                            <Settings className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Manage Aliases</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -961,7 +1023,7 @@ export default function App() {
           )}
         </main>
         
-        {/* --- MANUAL SYNC MODAL --- */}
+        {/* --- MANUAL SYNC MODAL (Admin Only) --- */}
         {showManualSync && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 animate-in fade-in">
             <div className="bg-slate-800 rounded-xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-700 flex flex-col max-h-[90vh]">
@@ -978,7 +1040,7 @@ export default function App() {
               <div className="p-6 overflow-y-auto space-y-6">
                 <div className="bg-indigo-900/30 border border-indigo-500/30 p-4 rounded-lg">
                   <p className="text-sm text-indigo-200 mb-2">
-                    If BoardGameGeek is blocking the Auto-Sync, you can securely download your data directly from BGG and drop it here.
+                    If BoardGameGeek is blocking the Auto-Sync, you can securely download your data directly from BGG and push it to your Cloud Dashboard here.
                   </p>
                 </div>
 
@@ -1010,7 +1072,7 @@ export default function App() {
                       <h4 className="font-bold text-white">Import Plays XML</h4>
                     </div>
                     <p className="text-sm text-slate-400 mb-4 pl-9">
-                      Click the link below, save the page as an XML file, and select it here to load your play history.
+                      Click the link below, save the page as an XML file, and select it here to push your play history to the cloud.
                     </p>
                     <div className="pl-9 mb-4">
                       <a href={`https://boardgamegeek.com/xmlapi2/plays?username=${encodeURIComponent(username)}`} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 text-sm font-medium flex items-center underline">
@@ -1050,7 +1112,7 @@ export default function App() {
               <div className="p-5 overflow-y-auto">
                 <p className="text-sm text-slate-400 mb-6">
                   Link multiple names (like "Inboundbreeze" on BGG and "Richard" on custom plays) to combine their stats. 
-                  {isFirebaseValid ? " These are synced securely to your cloud database." : " These are currently saved only to this browser."}
+                  These are synced securely to your cloud database for everyone to see.
                 </p>
 
                 <form onSubmit={handleSaveAlias} className="flex gap-2 items-end mb-8 bg-slate-900/50 p-4 rounded-lg border border-slate-700">
